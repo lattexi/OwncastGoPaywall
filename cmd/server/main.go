@@ -35,6 +35,7 @@ func main() {
 	log.Info().
 		Str("port", cfg.Port).
 		Str("base_url", cfg.BaseURL).
+		Str("rtmp_public_host", cfg.RTMPPublicHost).
 		Msg("Starting stream paywall server")
 
 	// Create context for graceful shutdown

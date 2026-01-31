@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -107,6 +108,16 @@ func Load() (*Config, error) {
 
 	if cfg.AdminAPIKey == "" {
 		return nil, fmt.Errorf("ADMIN_API_KEY is required")
+	}
+
+	// Warn about localhost in production
+	if os.Getenv("ENV") == "production" {
+		if strings.Contains(cfg.BaseURL, "localhost") {
+			return nil, fmt.Errorf("BASE_URL contains 'localhost' but ENV=production. Set BASE_URL to your public domain")
+		}
+		if cfg.RTMPPublicHost == "localhost" {
+			return nil, fmt.Errorf("RTMP_PUBLIC_HOST is 'localhost' but ENV=production. Set RTMP_PUBLIC_HOST to your public hostname")
+		}
 	}
 
 	return cfg, nil
