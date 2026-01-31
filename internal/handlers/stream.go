@@ -2,10 +2,12 @@ package handlers
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,13 +18,23 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// hlsURLRegex matches HLS segment and playlist URLs (compiled once at package level)
+var hlsURLRegex = regexp.MustCompile(`^[^#].*\.(ts|m4s|m3u8)(\?.*)?$`)
+
+// streamCacheEntry holds cached stream data with expiry
+type streamCacheEntry struct {
+	stream    *models.Stream
+	expiresAt time.Time
+}
+
 // StreamHandler handles stream-related endpoints
 type StreamHandler struct {
-	cfg       *config.Config
-	pgStore   *storage.PostgresStore
-	redis     *storage.RedisStore
-	urlSigner *security.URLSigner
-	client    *http.Client
+	cfg         *config.Config
+	pgStore     *storage.PostgresStore
+	redis       *storage.RedisStore
+	urlSigner   *security.URLSigner
+	client      *http.Client
+	streamCache sync.Map // uuid.UUID -> *streamCacheEntry
 }
 
 // NewStreamHandler creates a new stream handler
@@ -33,9 +45,40 @@ func NewStreamHandler(cfg *config.Config, pgStore *storage.PostgresStore, redis 
 		redis:     redis,
 		urlSigner: security.NewURLSigner(cfg.SigningSecret, cfg.SignatureValidity),
 		client: &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 100,
+				IdleConnTimeout:     90 * time.Second,
+				DisableCompression:  true, // Video segments are already compressed
+			},
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+// getStreamCached returns a stream from cache or fetches from DB
+func (h *StreamHandler) getStreamCached(ctx context.Context, id uuid.UUID) (*models.Stream, error) {
+	// Check cache
+	if entry, ok := h.streamCache.Load(id); ok {
+		e := entry.(*streamCacheEntry)
+		if time.Now().Before(e.expiresAt) {
+			return e.stream, nil
+		}
+		h.streamCache.Delete(id) // Expired
+	}
+
+	// Fetch from DB
+	stream, err := h.pgStore.GetStreamByID(ctx, id)
+	if err != nil || stream == nil {
+		return stream, err
+	}
+
+	// Cache for 60 seconds
+	h.streamCache.Store(id, &streamCacheEntry{
+		stream:    stream,
+		expiresAt: time.Now().Add(60 * time.Second),
+	})
+	return stream, nil
 }
 
 // ServeHLS handles HLS playlist and segment requests
@@ -64,8 +107,8 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// Get stream from database
-	stream, err := h.pgStore.GetStreamByID(ctx, streamUUID)
+	// Get stream from cache (or DB on cache miss)
+	stream, err := h.getStreamCached(ctx, streamUUID)
 	if err != nil {
 		log.Error().Err(err).Str("stream_id", streamID).Msg("Failed to get stream")
 		http.Error(w, "Stream not found", http.StatusNotFound)
@@ -77,6 +120,8 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 	}
 	
 	// Verify the signed URL
+	// The signature validates: streamID + token + path + expiry
+	// If signature is valid, the token was valid when the URL was signed
 	err = h.urlSigner.VerifyURLFromRequest(streamID, "/stream/"+streamID+"/hls/"+hlsPath, r.URL.Query())
 	if err != nil {
 		log.Warn().
@@ -87,27 +132,10 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid or expired signature", http.StatusForbidden)
 		return
 	}
-	
-	// Extract token for device validation
+
+	// Extract token for playlist URL signing (already validated by signature above)
 	token := r.URL.Query().Get("token")
-	if token == "" {
-		http.Error(w, "Missing token", http.StatusUnauthorized)
-		return
-	}
-	
-	// Validate token exists and is valid
-	payment, err := h.pgStore.GetPaymentByAccessToken(ctx, token)
-	if err != nil || payment == nil || !payment.IsTokenValid() {
-		http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
-		return
-	}
-	
-	// Verify token is for this stream
-	if payment.StreamID != streamUUID {
-		http.Error(w, "Token not valid for this stream", http.StatusForbidden)
-		return
-	}
-	
+
 	// Build internal Owncast URL
 	owncastURL := strings.TrimSuffix(stream.OwncastURL, "/") + "/hls/" + hlsPath
 	
@@ -166,15 +194,12 @@ func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, st
 func (h *StreamHandler) rewritePlaylist(body io.Reader, streamID, token, baseDir string) (string, error) {
 	var result strings.Builder
 	scanner := bufio.NewScanner(body)
-	
-	// Regex to match segment/playlist URLs
-	urlRegex := regexp.MustCompile(`^[^#].*\.(ts|m4s|m3u8)(\?.*)?$`)
-	
+
 	for scanner.Scan() {
 		line := scanner.Text()
-		
+
 		// Check if this line is a URL (segment or nested playlist)
-		if urlRegex.MatchString(line) {
+		if hlsURLRegex.MatchString(line) {
 			// Extract the filename/path
 			originalPath := line
 			
