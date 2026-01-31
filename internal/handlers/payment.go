@@ -254,13 +254,11 @@ func (h *PaymentHandler) HandleSuccessCallback(w http.ResponseWriter, r *http.Re
 func (h *PaymentHandler) HandleCancelCallback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Verify signature (if present - cancel might not always have signature)
-	if r.URL.Query().Get("signature") != "" {
-		if !paytrail.VerifyCallbackSignature(h.cfg.PaytrailSecretKey, r.URL.Query()) {
-			log.Warn().Msg("Invalid cancel callback signature")
-			writeJSONError(w, http.StatusForbidden, "Invalid signature")
-			return
-		}
+	// Always verify signature - Paytrail signs all callbacks
+	if !paytrail.VerifyCallbackSignature(h.cfg.PaytrailSecretKey, r.URL.Query()) {
+		log.Warn().Str("query", r.URL.RawQuery).Msg("Invalid or missing cancel callback signature")
+		writeJSONError(w, http.StatusForbidden, "Invalid signature")
+		return
 	}
 
 	params := paytrail.ExtractCallbackParams(r.URL.Query())
