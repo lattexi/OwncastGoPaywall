@@ -1,0 +1,52 @@
+{{define "title"}}Error{{end}}
+
+{{define "content"}}
+<div style="max-width: 500px; margin: 4rem auto; text-align: center;">
+    <div style="font-size: 6rem; margin-bottom: 1rem;">
+        {{if eq .Code 404}}
+        &#128269;
+        {{else if eq .Code 403}}
+        &#128274;
+        {{else if eq .Code 401}}
+        &#128272;
+        {{else}}
+        &#9888;
+        {{end}}
+    </div>
+    
+    <h1 style="margin-bottom: 0.5rem;">
+        {{if eq .Code 404}}
+        Not Found
+        {{else if eq .Code 403}}
+        Access Denied
+        {{else if eq .Code 401}}
+        Unauthorized
+        {{else}}
+        Something Went Wrong
+        {{end}}
+    </h1>
+    
+    <p style="color: var(--text-secondary); margin-bottom: 2rem;">
+        {{if .Message}}
+        {{.Message}}
+        {{else}}
+        {{if eq .Code 404}}
+        The page you're looking for doesn't exist.
+        {{else if eq .Code 403}}
+        You don't have permission to access this resource.
+        {{else if eq .Code 401}}
+        Please purchase access to view this content.
+        {{else}}
+        An unexpected error occurred. Please try again later.
+        {{end}}
+        {{end}}
+    </p>
+    
+    <div style="display: flex; gap: 1rem; justify-content: center;">
+        <a href="/" class="btn btn-primary">Go Home</a>
+        {{if .StreamSlug}}
+        <a href="/stream/{{.StreamSlug}}" class="btn btn-secondary">View Stream</a>
+        {{end}}
+    </div>
+</div>
+{{end}}

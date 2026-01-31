@@ -1,0 +1,44 @@
+{{define "title"}}Available Streams{{end}}
+
+{{define "content"}}
+<h1 style="margin-bottom: 2rem;">Available Streams</h1>
+
+{{if .Streams}}
+<div class="stream-grid">
+    {{range .Streams}}
+    <div class="stream-card">
+        <div class="stream-card-image">
+            <span>&#127909;</span>
+        </div>
+        <div class="stream-card-body">
+            <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.5rem;">
+                <h3>{{.Title}}</h3>
+                {{if eq .Status "live"}}
+                <span class="stream-status live">Live</span>
+                {{else if eq .Status "scheduled"}}
+                <span class="stream-status scheduled">Upcoming</span>
+                {{end}}
+            </div>
+            {{if .Description}}
+            <p>{{.Description}}</p>
+            {{end}}
+            {{if .StartTime}}
+            <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem;">
+                Starts: {{.StartTime.Format "2.1.2006 15:04"}}
+            </p>
+            {{end}}
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span class="stream-price">{{printf "%.2f" .PriceEuros}} &euro;</span>
+                <a href="/stream/{{.Slug}}" class="btn btn-primary">View Details</a>
+            </div>
+        </div>
+    </div>
+    {{end}}
+</div>
+{{else}}
+<div style="text-align: center; padding: 4rem 0;">
+    <h2 style="color: var(--text-secondary);">No streams available</h2>
+    <p style="color: var(--text-secondary);">Check back later for upcoming streams.</p>
+</div>
+{{end}}
+{{end}}

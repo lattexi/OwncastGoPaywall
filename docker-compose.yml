@@ -1,0 +1,103 @@
+services:
+  # Stream Paywall Server - Public facing
+  paywall:
+    build: .
+    container_name: stream-paywall
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+      # Note: RTMP ports (19350-19399) are exposed directly by dynamic Owncast containers
+    environment:
+      - ENV=production
+      - BASE_URL=${BASE_URL:-http://localhost:3000}
+      - PORT=3000
+      - PAYTRAIL_MERCHANT_ID=${PAYTRAIL_MERCHANT_ID}
+      - PAYTRAIL_SECRET_KEY=${PAYTRAIL_SECRET_KEY}
+      - SIGNING_SECRET=${SIGNING_SECRET}
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+      - ADMIN_INITIAL_USER=${ADMIN_INITIAL_USER:-admin}
+      - ADMIN_INITIAL_PASSWORD=${ADMIN_INITIAL_PASSWORD:-changeme}
+      - DATABASE_URL=postgres://paywall:${POSTGRES_PASSWORD:-paywall}@postgres:5432/paywall?sslmode=disable
+      - REDIS_URL=redis://redis:6379
+      - SESSION_DURATION=${SESSION_DURATION:-24h}
+      - HEARTBEAT_TIMEOUT=${HEARTBEAT_TIMEOUT:-45s}
+      - SIGNATURE_VALIDITY=${SIGNATURE_VALIDITY:-30s}
+      # Docker management configuration
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - DOCKER_NETWORK=owncastgopaywall_internal
+      - OWNCAST_IMAGE=${OWNCAST_IMAGE:-owncast/owncast:latest}
+      - RTMP_PORT_START=${RTMP_PORT_START:-19350}
+      - RTMP_PUBLIC_HOST=${RTMP_PUBLIC_HOST:-localhost}
+    volumes:
+      # Mount Docker socket for container management
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - public
+      - internal
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Note: Owncast containers are now created dynamically by the paywall server
+  # Each stream gets its own isolated Owncast instance with a unique RTMP port
+
+  # PostgreSQL - Internal only
+  postgres:
+    image: postgres:16-alpine
+    container_name: paywall-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=paywall
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-paywall}
+      - POSTGRES_DB=paywall
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paywall"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis - Internal only
+  redis:
+    image: redis:7-alpine
+    container_name: paywall-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  # Public network - for services that need external access
+  public:
+    driver: bridge
+  
+  # Internal network - for internal services and dynamic Owncast containers
+  # Note: Dynamic Owncast containers join this network for HLS proxying
+  # but expose RTMP ports directly on the host for OBS connections
+  internal:
+    driver: bridge
+    # Removed internal: true so dynamic containers can be managed properly
+    # Security is maintained by not exposing HLS ports - only RTMP for streaming input
+
+volumes:
+  postgres-data:
+  redis-data:

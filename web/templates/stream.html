@@ -1,0 +1,117 @@
+{{define "title"}}{{.Stream.Title}}{{end}}
+
+{{define "content"}}
+<div class="stream-detail">
+    <div class="stream-info">
+        <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem;">
+            {{if eq .Stream.Status "live"}}
+            <span class="stream-status live">Live Now</span>
+            {{else if eq .Stream.Status "scheduled"}}
+            <span class="stream-status scheduled">Upcoming</span>
+            {{end}}
+        </div>
+        
+        <h1>{{.Stream.Title}}</h1>
+        
+        {{if .Stream.Description}}
+        <p class="description">{{.Stream.Description}}</p>
+        {{end}}
+        
+        {{if .Stream.StartTime}}
+        <div style="margin-bottom: 1rem;">
+            <strong>Start Time:</strong> {{.Stream.StartTime.Format "Monday, 2 January 2006 at 15:04"}}
+        </div>
+        {{end}}
+        
+        {{if .Stream.EndTime}}
+        <div style="margin-bottom: 1rem;">
+            <strong>End Time:</strong> {{.Stream.EndTime.Format "Monday, 2 January 2006 at 15:04"}}
+        </div>
+        {{end}}
+    </div>
+    
+    <div class="purchase-card">
+        <div class="price-tag">
+            <span class="amount">{{printf "%.2f" .Stream.PriceEuros}}</span>
+            <span class="currency">&euro;</span>
+        </div>
+        
+        {{if .HasAccess}}
+        <a href="/watch/{{.Stream.Slug}}" class="btn btn-primary btn-block">
+            Watch Stream
+        </a>
+        {{else}}
+        <form id="purchase-form">
+            <div class="form-group">
+                <label for="email">Email Address</label>
+                <input type="email" id="email" name="email" required 
+                       placeholder="your@email.com"
+                       autocomplete="email">
+            </div>
+            
+            <button type="submit" class="btn btn-primary btn-block" id="purchase-btn">
+                Purchase Access
+            </button>
+        </form>
+        
+        <div class="error-message" id="error-message" style="display: none;"></div>
+        
+        <div class="recovery-section">
+            <p>Already purchased?</p>
+            <a href="/recover/{{.Stream.Slug}}">Recover your access</a>
+        </div>
+        {{end}}
+    </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('purchase-form');
+    if (!form) return;
+    
+    const btn = document.getElementById('purchase-btn');
+    const errorDiv = document.getElementById('error-message');
+    
+    form.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const email = document.getElementById('email').value;
+        if (!email) return;
+        
+        btn.disabled = true;
+        btn.innerHTML = '<span class="loading"><span class="spinner"></span> Processing...</span>';
+        errorDiv.style.display = 'none';
+        
+        try {
+            const response = await fetch('/api/payment/create', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    stream_slug: '{{.Stream.Slug}}',
+                    email: email
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.error || 'Failed to create payment');
+            }
+            
+            // Redirect to Paytrail
+            window.location.href = data.redirect_url;
+            
+        } catch (error) {
+            errorDiv.textContent = error.message;
+            errorDiv.style.display = 'block';
+            btn.disabled = false;
+            btn.textContent = 'Purchase Access';
+        }
+    });
+});
+</script>
+{{end}}

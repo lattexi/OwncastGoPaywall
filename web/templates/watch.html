@@ -1,0 +1,143 @@
+{{define "title"}}{{.Stream.Title}}{{end}}
+
+{{define "head"}}
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7"></script>
+<script src="/static/js/player.js"></script>
+<style>
+    .watch-container {
+        max-width: 1200px;
+        margin: 0 auto;
+    }
+    .video-wrapper {
+        position: relative;
+        background: #000;
+        border-radius: 12px;
+        overflow: hidden;
+        margin-bottom: 2rem;
+    }
+    video {
+        width: 100%;
+        display: block;
+    }
+    .stream-info-bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 1rem;
+        background: var(--bg-primary);
+        border-radius: 12px;
+        box-shadow: var(--shadow-md);
+    }
+</style>
+{{end}}
+
+{{define "content"}}
+<div class="watch-container">
+    <div class="video-wrapper">
+        <video id="video-player" controls playsinline></video>
+        
+        <div id="video-overlay" class="video-overlay hidden">
+            <div>
+                <h2 id="overlay-title">Loading...</h2>
+                <p id="overlay-message"></p>
+                <button id="overlay-action" class="btn btn-primary" style="display: none;"></button>
+            </div>
+        </div>
+    </div>
+    
+    <div class="stream-info-bar">
+        <div>
+            <h2 style="margin-bottom: 0.25rem;">{{.Stream.Title}}</h2>
+            {{if eq .Stream.Status "live"}}
+            <span class="stream-status live">Live</span>
+            {{end}}
+        </div>
+    </div>
+</div>
+
+{{end}}
+
+{{define "scripts"}}
+<script>
+document.addEventListener('DOMContentLoaded', async function() {
+    const videoElement = document.getElementById('video-player');
+    const overlay = document.getElementById('video-overlay');
+    const overlayTitle = document.getElementById('overlay-title');
+    const overlayMessage = document.getElementById('overlay-message');
+    const overlayAction = document.getElementById('overlay-action');
+
+    function showOverlay(title, message, actionText, actionCallback) {
+        overlayTitle.textContent = title;
+        overlayMessage.textContent = message;
+        overlay.classList.remove('hidden');
+        
+        if (actionText && actionCallback) {
+            overlayAction.textContent = actionText;
+            overlayAction.onclick = actionCallback;
+            overlayAction.style.display = 'inline-flex';
+        } else {
+            overlayAction.style.display = 'none';
+        }
+    }
+
+    function hideOverlay() {
+        overlay.classList.add('hidden');
+    }
+
+    // Initialize player
+    showOverlay('Loading...', 'Preparing stream...');
+
+    const player = new StreamPlayer({
+        videoElement: videoElement,
+        playlistUrl: '{{.PlaylistURL}}',
+        streamId: '{{.Stream.ID}}',
+        heartbeatInterval: 30000,
+        
+        onReady: function() {
+            hideOverlay();
+            // Autoplay with muted (browsers require this)
+            videoElement.muted = true;
+            videoElement.play().then(() => {
+                // Unmute after autoplay succeeds
+                setTimeout(() => {
+                    videoElement.muted = false;
+                }, 100);
+            }).catch(err => {
+                console.log('Autoplay prevented:', err);
+            });
+        },
+        
+        onError: function(error) {
+            console.error('Player error:', error);
+            
+            if (error.type === 'auth') {
+                showOverlay(
+                    'Session Expired',
+                    error.message,
+                    'Purchase Access',
+                    function() {
+                        window.location.href = '/stream/{{.Stream.Slug}}';
+                    }
+                );
+            } else {
+                showOverlay(
+                    'Playback Error',
+                    error.message || 'Unable to play stream',
+                    'Retry',
+                    function() {
+                        location.reload();
+                    }
+                );
+            }
+        }
+    });
+
+    await player.init();
+
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', function() {
+        player.destroy();
+    });
+});
+</script>
+{{end}}

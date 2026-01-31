@@ -1,0 +1,95 @@
+{{define "title"}}Recover Access - {{.Stream.Title}}{{end}}
+
+{{define "content"}}
+<div style="max-width: 500px; margin: 0 auto;">
+    <div class="stream-info" style="margin-bottom: 2rem;">
+        <h1>Recover Access</h1>
+        <p style="color: var(--text-secondary);">
+            If you've already purchased access to <strong>{{.Stream.Title}}</strong> but lost your session,
+            enter your email address below to recover it.
+        </p>
+    </div>
+    
+    <div class="purchase-card">
+        <form id="recover-form">
+            <div class="form-group">
+                <label for="email">Email Address</label>
+                <input type="email" id="email" name="email" required 
+                       placeholder="Enter the email you used to purchase"
+                       autocomplete="email">
+            </div>
+            
+            <button type="submit" class="btn btn-primary btn-block" id="recover-btn">
+                Recover Access
+            </button>
+        </form>
+        
+        <div class="error-message" id="error-message" style="display: none;"></div>
+        <div class="success-message" id="success-message" style="display: none;"></div>
+        
+        <div class="recovery-section">
+            <p>Don't have access?</p>
+            <a href="/stream/{{.Stream.Slug}}">Purchase access</a>
+        </div>
+    </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('recover-form');
+    const btn = document.getElementById('recover-btn');
+    const errorDiv = document.getElementById('error-message');
+    const successDiv = document.getElementById('success-message');
+    
+    form.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const email = document.getElementById('email').value;
+        if (!email) return;
+        
+        btn.disabled = true;
+        btn.innerHTML = '<span class="loading"><span class="spinner"></span> Checking...</span>';
+        errorDiv.style.display = 'none';
+        successDiv.style.display = 'none';
+        
+        try {
+            const response = await fetch('/api/payment/recover', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    stream_slug: '{{.Stream.Slug}}',
+                    email: email
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                if (response.status === 429) {
+                    throw new Error('Too many attempts. Please try again later.');
+                }
+                throw new Error(data.error || 'No purchase found for this email.');
+            }
+            
+            // Success!
+            successDiv.textContent = 'Access recovered! Redirecting...';
+            successDiv.style.display = 'block';
+            
+            setTimeout(function() {
+                window.location.href = data.redirect_url || '/watch/{{.Stream.Slug}}';
+            }, 1000);
+            
+        } catch (error) {
+            errorDiv.textContent = error.message;
+            errorDiv.style.display = 'block';
+            btn.disabled = false;
+            btn.textContent = 'Recover Access';
+        }
+    });
+});
+</script>
+{{end}}

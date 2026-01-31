@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}} - Stream Paywall</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    {{block "head" .}}{{end}}
+</head>
+<body>
+    <header class="header">
+        <div class="container">
+            <a href="/" class="logo">Stream Paywall</a>
+        </div>
+    </header>
+
+    <main>
+        <div class="container">
+            {{block "content" .}}{{end}}
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; {{.Year}} Stream Paywall. All rights reserved.</p>
+        </div>
+    </footer>
+
+    {{block "scripts" .}}{{end}}
+</body>
+</html>

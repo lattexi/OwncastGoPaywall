@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{if .IsEdit}}Edit Stream{{else}}New Stream{{end}} - Admin</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body class="admin-body">
+    <nav class="admin-nav">
+        <div class="admin-nav-brand">
+            <a href="/admin">Admin Panel</a>
+        </div>
+        <div class="admin-nav-links">
+            <a href="/admin">Dashboard</a>
+            <a href="/admin/streams" class="active">Streams</a>
+        </div>
+        <div class="admin-nav-user">
+            <span>{{.Username}}</span>
+            <a href="/admin/logout" class="btn btn-secondary btn-sm">Logout</a>
+        </div>
+    </nav>
+
+    <main class="admin-main">
+        <div class="admin-container">
+            <div class="admin-header">
+                <h1>{{if .IsEdit}}Edit Stream{{else}}New Stream{{end}}</h1>
+            </div>
+
+            {{if .IsEdit}}
+            <!-- Streaming Info Panel (only for existing streams) -->
+            <div class="streaming-info-card">
+                <h2>Streaming Configuration</h2>
+                
+                <div class="streaming-info-grid">
+                    <div class="streaming-info-item">
+                        <label>Container Status</label>
+                        <div class="container-status">
+                            <span class="status-badge status-{{.Stream.ContainerStatus}}">{{.Stream.ContainerStatus}}</span>
+                            {{if eq .Stream.ContainerStatus "stopped"}}
+                            <form method="POST" action="/admin/streams/{{.Stream.ID}}/container/start" style="display:inline;">
+                                <button type="submit" class="btn btn-primary btn-sm">Start Container</button>
+                            </form>
+                            {{else if eq .Stream.ContainerStatus "running"}}
+                            <form method="POST" action="/admin/streams/{{.Stream.ID}}/container/stop" style="display:inline;">
+                                <button type="submit" class="btn btn-secondary btn-sm">Stop Container</button>
+                            </form>
+                            {{end}}
+                        </div>
+                    </div>
+                    
+                    <div class="streaming-info-item">
+                        <label>RTMP URL (for OBS)</label>
+                        <div class="copy-field">
+                            <code id="rtmp-url">{{.Stream.RTMPURL}}</code>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="copyToClipboard('rtmp-url')">Copy</button>
+                        </div>
+                    </div>
+                    
+                    <div class="streaming-info-item">
+                        <label>Stream Key (for OBS)</label>
+                        <div class="copy-field">
+                            <code id="stream-key">{{.Stream.StreamKey}}</code>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="copyToClipboard('stream-key')">Copy</button>
+                        </div>
+                    </div>
+                    
+                    <div class="streaming-info-item">
+                        <label>Container Name</label>
+                        <code>{{.Stream.ContainerName}}</code>
+                    </div>
+                </div>
+                
+                <div class="streaming-instructions">
+                    <h3>OBS Setup Instructions</h3>
+                    <ol>
+                        <li>Start the container using the button above</li>
+                        <li>In OBS, go to Settings &rarr; Stream</li>
+                        <li>Set Service to "Custom"</li>
+                        <li>Paste the RTMP URL in the "Server" field</li>
+                        <li>Paste the Stream Key in the "Stream Key" field</li>
+                        <li>Click "Start Streaming" in OBS</li>
+                        <li>Set the stream status to "Live" below</li>
+                    </ol>
+                </div>
+            </div>
+            {{end}}
+
+            <div class="form-card">
+                {{if .Error}}
+                <div class="error-message">
+                    {{.Error}}
+                </div>
+                {{end}}
+                
+                <form method="POST" action="{{if .IsEdit}}/admin/streams/{{.Stream.ID}}{{else}}/admin/streams{{end}}">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="title">Title *</label>
+                            <input type="text" id="title" name="title" required
+                                   value="{{if .Stream}}{{.Stream.Title}}{{end}}"
+                                   placeholder="My Awesome Stream">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="slug">Slug *</label>
+                            <input type="text" id="slug" name="slug" required
+                                   value="{{if .Stream}}{{.Stream.Slug}}{{end}}"
+                                   placeholder="my-awesome-stream"
+                                   pattern="[a-z0-9-]+"
+                                   {{if .IsEdit}}readonly{{end}}>
+                            <div class="form-help">URL-friendly identifier (lowercase, hyphens only)</div>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="description">Description</label>
+                        <textarea id="description" name="description" rows="3"
+                                  placeholder="Optional description for the stream">{{if .Stream}}{{.Stream.Description}}{{end}}</textarea>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="price">Price (EUR) *</label>
+                            <input type="number" id="price" name="price" required
+                                   step="0.01" min="0"
+                                   value="{{if .Stream}}{{printf "%.2f" .Stream.PriceEuros}}{{else}}9.90{{end}}"
+                                   placeholder="9.90">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="max_viewers">Max Viewers</label>
+                            <input type="number" id="max_viewers" name="max_viewers"
+                                   min="0"
+                                   value="{{if .Stream}}{{.Stream.MaxViewers}}{{else}}0{{end}}"
+                                   placeholder="0 = unlimited">
+                            <div class="form-help">0 means unlimited</div>
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="start_time">Start Time</label>
+                            <input type="datetime-local" id="start_time" name="start_time"
+                                   value="{{if .Stream}}{{if .Stream.StartTime}}{{.Stream.StartTime.Format "2006-01-02T15:04"}}{{end}}{{end}}">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="end_time">End Time</label>
+                            <input type="datetime-local" id="end_time" name="end_time"
+                                   value="{{if .Stream}}{{if .Stream.EndTime}}{{.Stream.EndTime.Format "2006-01-02T15:04"}}{{end}}{{end}}">
+                        </div>
+                    </div>
+                    
+                    {{if .IsEdit}}
+                    <div class="form-group">
+                        <label for="status">Status</label>
+                        <select id="status" name="status">
+                            <option value="scheduled" {{if eq .Stream.Status "scheduled"}}selected{{end}}>Scheduled</option>
+                            <option value="live" {{if eq .Stream.Status "live"}}selected{{end}}>Live</option>
+                            <option value="ended" {{if eq .Stream.Status "ended"}}selected{{end}}>Ended</option>
+                        </select>
+                    </div>
+                    {{end}}
+                    
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary">
+                            {{if .IsEdit}}Save Changes{{else}}Create Stream{{end}}
+                        </button>
+                        <a href="/admin/streams" class="btn btn-secondary">Cancel</a>
+                    </div>
+                </form>
+            </div>
+
+            {{if .IsEdit}}
+            <!-- Whitelist Management -->
+            <div class="form-card" style="margin-top: 2rem;">
+                <h2>Email Whitelist</h2>
+                <p class="form-help" style="margin-bottom: 1rem;">
+                    Whitelisted emails can access this stream for free. They just need to enter their email on the "Already paid?" page.
+                </p>
+                
+                <!-- Add to whitelist form -->
+                <form id="whitelist-form" style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                    <input type="email" id="whitelist-email" placeholder="email@example.com" required style="flex: 1;">
+                    <input type="text" id="whitelist-notes" placeholder="Notes (optional)" style="flex: 1;">
+                    <button type="submit" class="btn btn-primary">Add</button>
+                </form>
+                
+                <div id="whitelist-message" class="error-message" style="display: none;"></div>
+                
+                <!-- Whitelist table -->
+                <table class="admin-table" id="whitelist-table">
+                    <thead>
+                        <tr>
+                            <th>Email</th>
+                            <th>Notes</th>
+                            <th>Added</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="whitelist-body">
+                        <tr><td colspan="4" style="text-align: center;">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    <script src="/static/js/admin.js"></script>
+    <script>
+    // Auto-generate slug from title
+    document.addEventListener('DOMContentLoaded', function() {
+        const titleInput = document.getElementById('title');
+        const slugInput = document.getElementById('slug');
+        
+        if (!slugInput.readOnly && titleInput && slugInput) {
+            titleInput.addEventListener('input', function() {
+                if (!slugInput.dataset.edited) {
+                    slugInput.value = titleInput.value
+                        .toLowerCase()
+                        .replace(/[^a-z0-9]+/g, '-')
+                        .replace(/^-|-$/g, '');
+                }
+            });
+            
+            slugInput.addEventListener('input', function() {
+                slugInput.dataset.edited = 'true';
+            });
+        }
+    });
+    
+    // Copy to clipboard function
+    function copyToClipboard(elementId) {
+        const element = document.getElementById(elementId);
+        const text = element.textContent;
+        
+        navigator.clipboard.writeText(text).then(function() {
+            // Show brief feedback
+            const btn = element.parentElement.querySelector('button');
+            const originalText = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(function() {
+                btn.textContent = originalText;
+            }, 2000);
+        }).catch(function(err) {
+            console.error('Failed to copy:', err);
+        });
+    }
+    
+    {{if .IsEdit}}
+    // Whitelist management
+    const streamId = '{{.Stream.ID}}';
+    const whitelistBody = document.getElementById('whitelist-body');
+    const whitelistForm = document.getElementById('whitelist-form');
+    const whitelistMessage = document.getElementById('whitelist-message');
+    
+    function showMessage(msg, isError) {
+        whitelistMessage.textContent = msg;
+        whitelistMessage.style.display = 'block';
+        whitelistMessage.className = isError ? 'error-message' : 'success-message';
+        setTimeout(() => { whitelistMessage.style.display = 'none'; }, 3000);
+    }
+    
+    async function loadWhitelist() {
+        try {
+            const response = await fetch(`/api/admin/streams/${streamId}/whitelist`, {
+                headers: { 'X-Admin-Key': '{{.AdminKey}}' }
+            });
+            const entries = await response.json();
+            
+            if (entries.length === 0) {
+                whitelistBody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary);">No whitelisted emails</td></tr>';
+                return;
+            }
+            
+            whitelistBody.innerHTML = entries.map(entry => `
+                <tr>
+                    <td>${entry.email}</td>
+                    <td>${entry.notes || '-'}</td>
+                    <td>${new Date(entry.created_at).toLocaleDateString()}</td>
+                    <td>
+                        <button class="btn btn-danger btn-sm" onclick="removeFromWhitelist('${entry.email}')">Remove</button>
+                    </td>
+                </tr>
+            `).join('');
+        } catch (error) {
+            console.error('Failed to load whitelist:', error);
+            whitelistBody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--danger);">Failed to load</td></tr>';
+        }
+    }
+    
+    whitelistForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const email = document.getElementById('whitelist-email').value;
+        const notes = document.getElementById('whitelist-notes').value;
+        
+        try {
+            const response = await fetch(`/api/admin/streams/${streamId}/whitelist`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Admin-Key': '{{.AdminKey}}'
+                },
+                body: JSON.stringify({ email, notes })
+            });
+            
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.error || 'Failed to add email');
+            }
+            
+            showMessage('Email added to whitelist', false);
+            document.getElementById('whitelist-email').value = '';
+            document.getElementById('whitelist-notes').value = '';
+            loadWhitelist();
+        } catch (error) {
+            showMessage(error.message, true);
+        }
+    });
+    
+    async function removeFromWhitelist(email) {
+        if (!confirm(`Remove ${email} from whitelist?`)) return;
+        
+        try {
+            const response = await fetch(`/api/admin/streams/${streamId}/whitelist/${encodeURIComponent(email)}`, {
+                method: 'DELETE',
+                headers: { 'X-Admin-Key': '{{.AdminKey}}' }
+            });
+            
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.error || 'Failed to remove email');
+            }
+            
+            showMessage('Email removed from whitelist', false);
+            loadWhitelist();
+        } catch (error) {
+            showMessage(error.message, true);
+        }
+    }
+    
+    // Load whitelist on page load
+    loadWhitelist();
+    {{end}}
+    </script>
+</body>
+</html>

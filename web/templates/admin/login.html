@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Login</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body class="admin-body">
+    <main class="admin-main">
+        <div class="admin-container">
+            <div class="login-container">
+                <div class="login-card">
+                    <div class="login-header">
+                        <h1>Admin Login</h1>
+                        <p>Sign in to access the admin panel</p>
+                    </div>
+                    
+                    {{if .Error}}
+                    <div class="error-message">
+                        {{.Error}}
+                    </div>
+                    {{end}}
+                    
+                    <form method="POST" action="/admin/login" class="login-form">
+                        <div class="form-group">
+                            <label for="username">Username</label>
+                            <input type="text" id="username" name="username" required 
+                                   autocomplete="username" autofocus
+                                   value="{{.Username}}">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="password">Password</label>
+                            <input type="password" id="password" name="password" required
+                                   autocomplete="current-password">
+                        </div>
+                        
+                        <button type="submit" class="btn btn-primary btn-block">
+                            Sign In
+                        </button>
+                    </form>
+                    
+                    <div class="login-footer">
+                        <a href="/">&larr; Back to site</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+</body>
+</html>

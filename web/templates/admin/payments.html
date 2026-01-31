@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payments - {{.Stream.Title}} - Admin</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body class="admin-body">
+    <nav class="admin-nav">
+        <div class="admin-nav-brand">
+            <a href="/admin">Admin Panel</a>
+        </div>
+        <div class="admin-nav-links">
+            <a href="/admin">Dashboard</a>
+            <a href="/admin/streams" class="active">Streams</a>
+        </div>
+        <div class="admin-nav-user">
+            <span>{{.Username}}</span>
+            <a href="/admin/logout" class="btn btn-secondary btn-sm">Logout</a>
+        </div>
+    </nav>
+
+    <main class="admin-main">
+        <div class="admin-container">
+            <div class="admin-header">
+                <div>
+                    <h1>Payments</h1>
+                    <p class="text-muted">Stream: {{.Stream.Title}}</p>
+                </div>
+                <a href="/admin/streams" class="btn btn-secondary">&larr; Back to Streams</a>
+            </div>
+
+            <div class="stats-row">
+                <div class="stat-inline">
+                    <span class="stat-value">{{.TotalPayments}}</span>
+                    <span class="stat-label">Total</span>
+                </div>
+                <div class="stat-inline">
+                    <span class="stat-value">{{.CompletedPayments}}</span>
+                    <span class="stat-label">Completed</span>
+                </div>
+                <div class="stat-inline">
+                    <span class="stat-value">{{printf "%.2f" .TotalRevenue}} &euro;</span>
+                    <span class="stat-label">Revenue</span>
+                </div>
+            </div>
+
+            {{if .Payments}}
+            <table class="admin-table">
+                <thead>
+                    <tr>
+                        <th>Email</th>
+                        <th>Amount</th>
+                        <th>Status</th>
+                        <th>Paytrail Ref</th>
+                        <th>Token</th>
+                        <th>Expiry</th>
+                        <th>Date</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Payments}}
+                    <tr>
+                        <td>{{.Email}}</td>
+                        <td>{{printf "%.2f" .AmountEuros}} &euro;</td>
+                        <td>
+                            <span class="status-badge status-{{.Status}}">{{.Status}}</span>
+                        </td>
+                        <td><code>{{.PaytrailRef}}</code></td>
+                        <td>
+                            {{if .TokenPreview}}
+                            <code>{{.TokenPreview}}</code>
+                            {{else}}
+                            <span class="text-muted">-</span>
+                            {{end}}
+                        </td>
+                        <td>
+                            {{if .TokenExpiry}}
+                            {{.TokenExpiry.Format "2.1.2006 15:04"}}
+                            {{else}}
+                            <span class="text-muted">-</span>
+                            {{end}}
+                        </td>
+                        <td>{{.CreatedAt.Format "2.1.2006 15:04"}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="empty-state">
+                <h2>No payments yet</h2>
+                <p>Payments will appear here once customers purchase access.</p>
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    <script src="/static/js/admin.js"></script>
+</body>
+</html>
