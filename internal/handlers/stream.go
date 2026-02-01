@@ -145,12 +145,48 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 	// Extract token for playlist URL signing (already validated by signature above)
 	token := r.URL.Query().Get("token")
 
-	// Build internal Owncast URL
-	owncastURL := strings.TrimSuffix(stream.OwncastURL, "/") + "/hls/" + hlsPath
-	
 	// Determine content type based on file extension
 	isPlaylist := strings.HasSuffix(hlsPath, ".m3u8")
-	
+
+	// For playlist requests, validate session and device (server-side protection)
+	// This prevents cheaters from bypassing client-side JavaScript checks
+	if isPlaylist {
+		// Validate token is still valid
+		payment, err := h.pgStore.GetPaymentByAccessToken(ctx, token)
+		if err != nil || payment == nil || !payment.IsTokenValid() {
+			log.Warn().
+				Str("stream_id", streamID).
+				Str("path", hlsPath).
+				Msg("Invalid token on playlist request")
+			http.Error(w, "Session expired", http.StatusUnauthorized)
+			return
+		}
+
+		// Verify token is for this stream
+		if payment.StreamID != streamUUID {
+			http.Error(w, "Token not valid for this stream", http.StatusForbidden)
+			return
+		}
+
+		// Check device validation if we have device info in Redis
+		activeDevice, err := h.sessionManager.GetActiveDevice(ctx, token)
+		if err == nil && activeDevice != nil {
+			// Check if device has been active recently (within heartbeat timeout)
+			if time.Since(activeDevice.LastSeen) > h.cfg.HeartbeatTimeout {
+				log.Warn().
+					Str("stream_id", streamID).
+					Str("token", token[:8]+"...").
+					Time("last_seen", activeDevice.LastSeen).
+					Msg("Device timed out on playlist request")
+				http.Error(w, "Session expired - no recent heartbeat", http.StatusUnauthorized)
+				return
+			}
+		}
+	}
+
+	// Build internal Owncast URL
+	owncastURL := strings.TrimSuffix(stream.OwncastURL, "/") + "/hls/" + hlsPath
+
 	if isPlaylist {
 		h.servePlaylist(w, r, stream, owncastURL, token, hlsPath)
 	} else {
