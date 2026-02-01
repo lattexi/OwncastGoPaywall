@@ -61,8 +61,8 @@ func VerifySignature(secret, signature string, params map[string]string) bool {
 		parts = append(parts, k+":"+params[k])
 	}
 
-	// Join with newlines (no body for callbacks)
-	payload := strings.Join(parts, "\n")
+	// Join with newlines and add trailing newline (required by Paytrail)
+	payload := strings.Join(parts, "\n") + "\n"
 
 	// Calculate expected signature
 	h := hmac.New(sha256.New, []byte(secret))
@@ -70,7 +70,6 @@ func VerifySignature(secret, signature string, params map[string]string) bool {
 	expected := hex.EncodeToString(h.Sum(nil))
 
 	log.Debug().
-		Str("payload", payload).
 		Str("expected", expected).
 		Str("received", signature).
 		Bool("match", subtle.ConstantTimeCompare([]byte(expected), []byte(signature)) == 1).
