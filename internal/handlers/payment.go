@@ -73,8 +73,10 @@ func (h *PaymentHandler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate unique stamp for this payment
+	// Include random prefix to avoid collisions in shared test environments
 	paymentID := uuid.New()
-	stamp := paymentID.String()
+	randomPrefix, _ := generateAccessToken() // Reuse the secure random generator
+	stamp := randomPrefix[:8] + "-" + paymentID.String()
 
 	// Create payment record in database
 	payment := &models.Payment{
