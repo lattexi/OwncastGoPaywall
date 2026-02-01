@@ -72,9 +72,6 @@
                         <td class="actions-cell">
                             <a href="/admin/streams/{{.ID}}/edit" class="btn btn-secondary btn-sm">Edit</a>
                             <a href="/admin/streams/{{.ID}}/payments" class="btn btn-secondary btn-sm">Payments</a>
-                            {{if eq .ContainerStatus "running"}}
-                            <a href="/admin/streams/{{.ID}}/owncast/admin/" class="btn btn-secondary btn-sm" target="_blank" title="Open Owncast Settings">Settings</a>
-                            {{end}}
 
                             {{if eq .Status "scheduled"}}
                             <form method="POST" action="/admin/streams/{{.ID}}/status" style="display:inline;">

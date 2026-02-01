@@ -1,12 +1,12 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,8 +17,8 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// OwncastProxyHandler proxies requests to Owncast container admin panels
-type OwncastProxyHandler struct {
+// OwncastAPIHandler handles Owncast API interactions
+type OwncastAPIHandler struct {
 	cfg       *config.Config
 	pgStore   *storage.PostgresStore
 	redis     *storage.RedisStore
@@ -26,239 +26,237 @@ type OwncastProxyHandler struct {
 	client    *http.Client
 }
 
-// NewOwncastProxyHandler creates a new Owncast proxy handler
-func NewOwncastProxyHandler(cfg *config.Config, pgStore *storage.PostgresStore, redis *storage.RedisStore, sessionMw *middleware.AdminSessionMiddleware) *OwncastProxyHandler {
-	return &OwncastProxyHandler{
+// NewOwncastProxyHandler creates a new Owncast API handler
+func NewOwncastProxyHandler(cfg *config.Config, pgStore *storage.PostgresStore, redis *storage.RedisStore, sessionMw *middleware.AdminSessionMiddleware) *OwncastAPIHandler {
+	return &OwncastAPIHandler{
 		cfg:       cfg,
 		pgStore:   pgStore,
 		redis:     redis,
 		sessionMw: sessionMw,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse // Don't follow redirects
-			},
 		},
 	}
 }
 
-// ProxyRequest handles proxying requests to the Owncast container
-func (h *OwncastProxyHandler) ProxyRequest(w http.ResponseWriter, r *http.Request) {
+// OwncastVideoVariant represents a video quality variant
+type OwncastVideoVariant struct {
+	Name             string `json:"name,omitempty"`
+	VideoBitrate     int    `json:"videoBitrate"`
+	AudioBitrate     int    `json:"audioBitrate,omitempty"`
+	Framerate        int    `json:"framerate"`
+	CPUUsageLevel    int    `json:"cpuUsageLevel"`
+	VideoPassthrough bool   `json:"videoPassthrough"`
+	AudioPassthrough bool   `json:"audioPassthrough"`
+}
+
+// OwncastVideoSettings represents video settings from Owncast
+type OwncastVideoSettings struct {
+	VideoQualityVariants []OwncastVideoVariant `json:"videoQualityVariants"`
+	LatencyLevel         int                   `json:"latencyLevel"`
+}
+
+// OwncastServerConfig represents the server config response
+type OwncastServerConfig struct {
+	VideoSettings OwncastVideoSettings `json:"videoSettings"`
+}
+
+// GetVideoSettings returns current video settings for a stream's Owncast instance
+func (h *OwncastAPIHandler) GetVideoSettings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Get stream ID from path
 	idStr := r.PathValue("id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		http.Error(w, "Invalid stream ID", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Invalid stream ID")
 		return
 	}
 
-	// Get the path to proxy
-	proxyPath := r.PathValue("path")
-	if proxyPath == "" {
-		proxyPath = "/"
-	}
-	if !strings.HasPrefix(proxyPath, "/") {
-		proxyPath = "/" + proxyPath
-	}
-
-	// Get stream from database
 	stream, err := h.pgStore.GetStreamByID(ctx, id)
 	if err != nil || stream == nil {
-		http.Error(w, "Stream not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "Stream not found")
 		return
 	}
 
-	// Check that container is running
 	if stream.ContainerStatus != models.ContainerStatusRunning {
-		http.Error(w, "Container is not running", http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "Container is not running")
 		return
 	}
 
-	// Build target URL (internal Docker network URL)
-	targetURL := fmt.Sprintf("%s%s", stream.OwncastURL, proxyPath)
-	if r.URL.RawQuery != "" {
-		targetURL += "?" + r.URL.RawQuery
-	}
-
-	// Create proxy request
-	proxyReq, err := http.NewRequestWithContext(ctx, r.Method, targetURL, r.Body)
+	// Fetch config from Owncast
+	config, err := h.fetchOwncastConfig(stream.OwncastURL)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to create proxy request")
-		http.Error(w, "Failed to create request", http.StatusInternalServerError)
+		log.Error().Err(err).Str("stream_id", id.String()).Msg("Failed to fetch Owncast config")
+		writeJSONError(w, http.StatusBadGateway, "Failed to fetch Owncast settings")
 		return
 	}
 
-	// Copy headers from original request
-	for key, values := range r.Header {
-		// Skip hop-by-hop headers
-		if isHopByHopHeader(key) {
-			continue
-		}
-		for _, value := range values {
-			proxyReq.Header.Add(key, value)
-		}
-	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"videoSettings": config.VideoSettings,
+	})
+}
 
-	// Add Basic Auth for Owncast admin
-	auth := base64.StdEncoding.EncodeToString([]byte("admin:" + h.cfg.OwncastAdminPassword))
-	proxyReq.Header.Set("Authorization", "Basic "+auth)
+// UpdateVideoSettings updates video settings for a stream's Owncast instance
+func (h *OwncastAPIHandler) UpdateVideoSettings(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 
-	// Remove any existing auth from the client
-	proxyReq.Header.Del("Cookie")
-
-	// Set forwarded headers
-	if clientIP := getClientIP(r); clientIP != "" {
-		proxyReq.Header.Set("X-Forwarded-For", clientIP)
-	}
-	proxyReq.Header.Set("X-Forwarded-Host", r.Host)
-	proxyReq.Header.Set("X-Forwarded-Proto", getProto(r))
-
-	// Execute request
-	resp, err := h.client.Do(proxyReq)
+	idStr := r.PathValue("id")
+	id, err := uuid.Parse(idStr)
 	if err != nil {
-		log.Error().Err(err).Str("url", targetURL).Msg("Proxy request failed")
-		http.Error(w, "Failed to reach Owncast container", http.StatusBadGateway)
+		writeJSONError(w, http.StatusBadRequest, "Invalid stream ID")
 		return
+	}
+
+	stream, err := h.pgStore.GetStreamByID(ctx, id)
+	if err != nil || stream == nil {
+		writeJSONError(w, http.StatusNotFound, "Stream not found")
+		return
+	}
+
+	if stream.ContainerStatus != models.ContainerStatusRunning {
+		writeJSONError(w, http.StatusServiceUnavailable, "Container is not running")
+		return
+	}
+
+	// Parse request body
+	var req struct {
+		Variants     []OwncastVideoVariant `json:"variants"`
+		LatencyLevel *int                  `json:"latencyLevel,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Update video variants
+	if len(req.Variants) > 0 {
+		err = h.updateOwncastVideoVariants(stream.OwncastURL, req.Variants)
+		if err != nil {
+			log.Error().Err(err).Str("stream_id", id.String()).Msg("Failed to update video variants")
+			writeJSONError(w, http.StatusBadGateway, "Failed to update video settings")
+			return
+		}
+	}
+
+	// Update latency level if provided
+	if req.LatencyLevel != nil {
+		err = h.updateOwncastLatency(stream.OwncastURL, *req.LatencyLevel)
+		if err != nil {
+			log.Error().Err(err).Str("stream_id", id.String()).Msg("Failed to update latency level")
+			writeJSONError(w, http.StatusBadGateway, "Failed to update latency settings")
+			return
+		}
+	}
+
+	log.Info().Str("stream_id", id.String()).Msg("Owncast video settings updated")
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "Video settings updated",
+	})
+}
+
+// fetchOwncastConfig fetches the server config from Owncast
+func (h *OwncastAPIHandler) fetchOwncastConfig(owncastURL string) (*OwncastServerConfig, error) {
+	url := owncastURL + "/api/admin/serverconfig"
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	h.addBasicAuth(req)
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, err
 	}
 	defer resp.Body.Close()
 
-	// Copy response headers
-	for key, values := range resp.Header {
-		// Skip hop-by-hop headers
-		if isHopByHopHeader(key) {
-			continue
-		}
-		for _, value := range values {
-			// Rewrite Location header for redirects
-			if key == "Location" {
-				value = h.rewriteURL(value, stream.OwncastURL, id.String())
-			}
-			w.Header().Add(key, value)
-		}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("owncast returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	var config OwncastServerConfig
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		return nil, err
+	}
+
+	return &config, nil
+}
+
+// updateOwncastVideoVariants updates video quality variants
+func (h *OwncastAPIHandler) updateOwncastVideoVariants(owncastURL string, variants []OwncastVideoVariant) error {
+	url := owncastURL + "/api/admin/config/video/streamoutputvariants"
+
+	payload := map[string]interface{}{
+		"value": variants,
+	}
+
+	body, err := json.Marshal(payload)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to read proxy response")
-		http.Error(w, "Failed to read response", http.StatusBadGateway)
-		return
+		return err
 	}
 
-	// Rewrite HTML content to fix URLs
-	contentType := resp.Header.Get("Content-Type")
-	if strings.Contains(contentType, "text/html") {
-		body = h.rewriteHTML(body, stream.OwncastURL, id.String())
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return err
 	}
 
-	// Write status code and body
-	w.WriteHeader(resp.StatusCode)
-	w.Write(body)
+	req.Header.Set("Content-Type", "application/json")
+	h.addBasicAuth(req)
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("owncast returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
 }
 
-// rewriteHTML rewrites URLs in HTML content to point to the proxy
-func (h *OwncastProxyHandler) rewriteHTML(body []byte, owncastURL, streamID string) []byte {
-	content := string(body)
-	proxyBase := fmt.Sprintf("/admin/streams/%s/owncast", streamID)
+// updateOwncastLatency updates the latency level
+func (h *OwncastAPIHandler) updateOwncastLatency(owncastURL string, level int) error {
+	url := owncastURL + "/api/admin/config/video/streamlatencylevel"
 
-	// Rewrite absolute URLs pointing to the Owncast container
-	content = strings.ReplaceAll(content, owncastURL, proxyBase)
+	payload := map[string]interface{}{
+		"value": level,
+	}
 
-	// Rewrite relative URLs in href and src attributes
-	// Match href="/..." and src="/..." patterns
-	hrefPattern := regexp.MustCompile(`(href|src|action)="(/[^"]*)"`)
-	content = hrefPattern.ReplaceAllStringFunc(content, func(match string) string {
-		// Extract the attribute and path
-		parts := hrefPattern.FindStringSubmatch(match)
-		if len(parts) == 3 {
-			attr := parts[1]
-			path := parts[2]
-			// Don't rewrite if it already starts with /admin/streams/
-			if strings.HasPrefix(path, "/admin/streams/") {
-				return match
-			}
-			// Don't rewrite external URLs
-			if strings.HasPrefix(path, "//") {
-				return match
-			}
-			return fmt.Sprintf(`%s="%s%s"`, attr, proxyBase, path)
-		}
-		return match
-	})
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
 
-	// Rewrite URLs in JavaScript fetch/API calls
-	// Match fetch("/api/...) patterns
-	fetchPattern := regexp.MustCompile(`fetch\s*\(\s*["'](/[^"']+)["']`)
-	content = fetchPattern.ReplaceAllStringFunc(content, func(match string) string {
-		parts := fetchPattern.FindStringSubmatch(match)
-		if len(parts) == 2 {
-			path := parts[1]
-			if strings.HasPrefix(path, "/admin/streams/") {
-				return match
-			}
-			return fmt.Sprintf(`fetch("%s%s"`, proxyBase, path)
-		}
-		return match
-	})
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
 
-	// Rewrite URLs in inline scripts that use string concatenation
-	// Match "/api" patterns in script contexts
-	apiPattern := regexp.MustCompile(`["']/(api|admin)[^"']*["']`)
-	content = apiPattern.ReplaceAllStringFunc(content, func(match string) string {
-		// Check if it's already rewritten
-		if strings.Contains(match, "/admin/streams/") {
-			return match
-		}
-		// Extract the quote character and path
-		quote := match[0:1]
-		path := match[1 : len(match)-1]
-		return fmt.Sprintf(`%s%s%s%s`, quote, proxyBase, path, quote)
-	})
+	req.Header.Set("Content-Type", "application/json")
+	h.addBasicAuth(req)
 
-	return []byte(content)
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("owncast returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
 }
 
-// rewriteURL rewrites a URL from Owncast internal URL to proxy URL
-func (h *OwncastProxyHandler) rewriteURL(url, owncastURL, streamID string) string {
-	proxyBase := fmt.Sprintf("/admin/streams/%s/owncast", streamID)
-
-	// If URL starts with the internal Owncast URL, rewrite it
-	if strings.HasPrefix(url, owncastURL) {
-		return proxyBase + strings.TrimPrefix(url, owncastURL)
-	}
-
-	// If URL is a relative path starting with /
-	if strings.HasPrefix(url, "/") && !strings.HasPrefix(url, "/admin/streams/") {
-		return proxyBase + url
-	}
-
-	return url
-}
-
-// isHopByHopHeader returns true if the header is a hop-by-hop header
-func isHopByHopHeader(header string) bool {
-	hopByHop := map[string]bool{
-		"Connection":          true,
-		"Keep-Alive":          true,
-		"Proxy-Authenticate":  true,
-		"Proxy-Authorization": true,
-		"Te":                  true,
-		"Trailer":             true,
-		"Transfer-Encoding":   true,
-		"Upgrade":             true,
-	}
-	return hopByHop[http.CanonicalHeaderKey(header)]
-}
-
-// getProto returns the protocol (http or https) from the request
-func getProto(r *http.Request) string {
-	if r.TLS != nil {
-		return "https"
-	}
-	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-		return proto
-	}
-	return "http"
+// addBasicAuth adds basic auth header to request
+func (h *OwncastAPIHandler) addBasicAuth(req *http.Request) {
+	auth := base64.StdEncoding.EncodeToString([]byte("admin:" + h.cfg.OwncastAdminPassword))
+	req.Header.Set("Authorization", "Basic "+auth)
 }

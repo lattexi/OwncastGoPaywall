@@ -165,11 +165,9 @@ func main() {
 	mux.Handle("POST /admin/streams/{id}/container/start", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.StartContainer)))
 	mux.Handle("POST /admin/streams/{id}/container/stop", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.StopContainer)))
 
-	// Owncast proxy routes (reverse proxy to container admin panels)
-	mux.Handle("GET /admin/streams/{id}/owncast/{path...}", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(owncastProxyHandler.ProxyRequest)))
-	mux.Handle("POST /admin/streams/{id}/owncast/{path...}", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(owncastProxyHandler.ProxyRequest)))
-	mux.Handle("PUT /admin/streams/{id}/owncast/{path...}", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(owncastProxyHandler.ProxyRequest)))
-	mux.Handle("DELETE /admin/streams/{id}/owncast/{path...}", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(owncastProxyHandler.ProxyRequest)))
+	// Owncast API routes (for managing Owncast container settings)
+	mux.Handle("GET /admin/api/streams/{id}/owncast/settings", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(owncastProxyHandler.GetVideoSettings)))
+	mux.Handle("POST /admin/api/streams/{id}/owncast/settings", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(owncastProxyHandler.UpdateVideoSettings)))
 
 	// Admin API for AJAX requests (protected by session)
 	mux.Handle("GET /admin/api/streams/{id}/viewers", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.GetViewerCountAPI)))
