@@ -294,18 +294,38 @@
     function copyToClipboard(elementId) {
         const element = document.getElementById(elementId);
         const text = element.textContent;
-        
-        navigator.clipboard.writeText(text).then(function() {
-            // Show brief feedback
-            const btn = element.parentElement.querySelector('button');
-            const originalText = btn.textContent;
+        const btn = element.parentElement.querySelector('button');
+        const originalText = btn.textContent;
+
+        // Try modern clipboard API first, fall back to execCommand
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function() {
+                btn.textContent = 'Copied!';
+                setTimeout(function() { btn.textContent = originalText; }, 2000);
+            }).catch(function() {
+                fallbackCopy(text, btn, originalText);
+            });
+        } else {
+            fallbackCopy(text, btn, originalText);
+        }
+    }
+
+    function fallbackCopy(text, btn, originalText) {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+            document.execCommand('copy');
             btn.textContent = 'Copied!';
-            setTimeout(function() {
-                btn.textContent = originalText;
-            }, 2000);
-        }).catch(function(err) {
-            console.error('Failed to copy:', err);
-        });
+            setTimeout(function() { btn.textContent = originalText; }, 2000);
+        } catch (err) {
+            btn.textContent = 'Failed';
+            setTimeout(function() { btn.textContent = originalText; }, 2000);
+        }
+        document.body.removeChild(textarea);
     }
     
     {{if .IsEdit}}
@@ -402,7 +422,6 @@
     
     // Load whitelist on page load
     loadWhitelist();
-    {{end}}
 
     {{if eq .Stream.ContainerStatus "running"}}
     // Video settings management
@@ -487,6 +506,7 @@
 
     // Load video settings on page load
     loadVideoSettings();
+    {{end}}
     {{end}}
     </script>
 </body>
