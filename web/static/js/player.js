@@ -224,6 +224,10 @@
 
                     if (!response.ok) {
                         if (response.status === 401) {
+                            // Stop playback immediately
+                            this.destroy();
+                            this.videoElement.pause();
+                            this.videoElement.src = '';
                             this.onError({
                                 type: 'auth',
                                 code: 401,
@@ -231,7 +235,10 @@
                                 action: 'redirect_purchase'
                             });
                         } else if (response.status === 409) {
-                            // Another device is watching
+                            // Another device is watching - stop playback
+                            this.destroy();
+                            this.videoElement.pause();
+                            this.videoElement.src = '';
                             this.onError({
                                 type: 'auth',
                                 code: 409,
