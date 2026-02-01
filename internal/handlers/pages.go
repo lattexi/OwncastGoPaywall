@@ -161,6 +161,12 @@ func (h *PageHandler) Watch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if stream is live
+	if stream.Status != models.StreamStatusLive {
+		h.renderError(w, 403, "This stream is not currently live.", slug)
+		return
+	}
+
 	// Get token from query param first, then fall back to cookie
 	token := r.URL.Query().Get("token")
 	if token == "" {

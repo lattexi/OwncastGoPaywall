@@ -430,7 +430,10 @@
     const videoSettingsError = document.getElementById('video-settings-error');
     const videoSettingsStatus = document.getElementById('video-settings-status');
 
-    async function loadVideoSettings() {
+    async function loadVideoSettings(retryCount = 0) {
+        const maxRetries = 5;
+        const retryDelay = 2000; // 2 seconds between retries
+
         try {
             const response = await fetch(`/admin/api/streams/${streamId}/owncast/settings`);
             if (!response.ok) {
@@ -454,9 +457,14 @@
             videoSettingsForm.style.display = 'block';
         } catch (error) {
             console.error('Failed to load video settings:', error);
-            videoSettingsLoading.style.display = 'none';
-            videoSettingsError.textContent = 'Failed to load video settings. Make sure the container is running.';
-            videoSettingsError.style.display = 'block';
+            if (retryCount < maxRetries) {
+                videoSettingsLoading.textContent = `Loading settings... (attempt ${retryCount + 2}/${maxRetries + 1})`;
+                setTimeout(() => loadVideoSettings(retryCount + 1), retryDelay);
+            } else {
+                videoSettingsLoading.style.display = 'none';
+                videoSettingsError.textContent = 'Failed to load video settings. The container may still be starting. Try refreshing the page.';
+                videoSettingsError.style.display = 'block';
+            }
         }
     }
 

@@ -118,7 +118,13 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Stream not found", http.StatusNotFound)
 		return
 	}
-	
+
+	// Check if stream is live
+	if stream.Status != models.StreamStatusLive {
+		http.Error(w, "Stream is not live", http.StatusForbidden)
+		return
+	}
+
 	// Verify the signed URL
 	// The signature validates: streamID + token + path + expiry
 	// If signature is valid, the token was valid when the URL was signed
