@@ -270,7 +270,7 @@
     document.addEventListener('DOMContentLoaded', function() {
         const titleInput = document.getElementById('title');
         const slugInput = document.getElementById('slug');
-        
+
         if (!slugInput.readOnly && titleInput && slugInput) {
             titleInput.addEventListener('input', function() {
                 if (!slugInput.dataset.edited) {
@@ -280,13 +280,13 @@
                         .replace(/^-|-$/g, '');
                 }
             });
-            
+
             slugInput.addEventListener('input', function() {
                 slugInput.dataset.edited = 'true';
             });
         }
     });
-    
+
     // Copy to clipboard function
     function copyToClipboard(elementId) {
         const element = document.getElementById(elementId);
@@ -324,33 +324,34 @@
         }
         document.body.removeChild(textarea);
     }
-    
+    </script>
     {{if .IsEdit}}
+    <script>
     // Whitelist management
     const streamId = '{{.Stream.ID}}';
     const whitelistBody = document.getElementById('whitelist-body');
     const whitelistForm = document.getElementById('whitelist-form');
     const whitelistMessage = document.getElementById('whitelist-message');
-    
+
     function showMessage(msg, isError) {
         whitelistMessage.textContent = msg;
         whitelistMessage.style.display = 'block';
         whitelistMessage.className = isError ? 'error-message' : 'success-message';
         setTimeout(() => { whitelistMessage.style.display = 'none'; }, 3000);
     }
-    
+
     async function loadWhitelist() {
         try {
             const response = await fetch(`/api/admin/streams/${streamId}/whitelist`, {
                 headers: { 'X-Admin-Key': '{{.AdminKey}}' }
             });
             const entries = await response.json();
-            
+
             if (entries.length === 0) {
                 whitelistBody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary);">No whitelisted emails</td></tr>';
                 return;
             }
-            
+
             whitelistBody.innerHTML = entries.map(entry => `
                 <tr>
                     <td>${entry.email}</td>
@@ -366,12 +367,12 @@
             whitelistBody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--danger);">Failed to load</td></tr>';
         }
     }
-    
+
     whitelistForm.addEventListener('submit', async function(e) {
         e.preventDefault();
         const email = document.getElementById('whitelist-email').value;
         const notes = document.getElementById('whitelist-notes').value;
-        
+
         try {
             const response = await fetch(`/api/admin/streams/${streamId}/whitelist`, {
                 method: 'POST',
@@ -381,12 +382,12 @@
                 },
                 body: JSON.stringify({ email, notes })
             });
-            
+
             if (!response.ok) {
                 const data = await response.json();
                 throw new Error(data.error || 'Failed to add email');
             }
-            
+
             showMessage('Email added to whitelist', false);
             document.getElementById('whitelist-email').value = '';
             document.getElementById('whitelist-notes').value = '';
@@ -395,32 +396,33 @@
             showMessage(error.message, true);
         }
     });
-    
+
     async function removeFromWhitelist(email) {
         if (!confirm(`Remove ${email} from whitelist?`)) return;
-        
+
         try {
             const response = await fetch(`/api/admin/streams/${streamId}/whitelist/${encodeURIComponent(email)}`, {
                 method: 'DELETE',
                 headers: { 'X-Admin-Key': '{{.AdminKey}}' }
             });
-            
+
             if (!response.ok) {
                 const data = await response.json();
                 throw new Error(data.error || 'Failed to remove email');
             }
-            
+
             showMessage('Email removed from whitelist', false);
             loadWhitelist();
         } catch (error) {
             showMessage(error.message, true);
         }
     }
-    
+
     // Load whitelist on page load
     loadWhitelist();
-
+    </script>
     {{if eq .Stream.ContainerStatus "running"}}
+    <script>
     // Video settings management
     const videoSettingsLoading = document.getElementById('video-settings-loading');
     const videoSettingsForm = document.getElementById('video-settings-form');
@@ -511,8 +513,8 @@
 
     // Load video settings on page load
     loadVideoSettings();
-    {{end}}
-    {{end}}
     </script>
+    {{end}}
+    {{end}}
 </body>
 </html>
