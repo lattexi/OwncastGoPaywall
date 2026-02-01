@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+
+	"github.com/rs/zerolog/log"
 )
 
 // CalculateSignature calculates the HMAC-SHA256 signature for Paytrail API
@@ -56,7 +58,7 @@ func VerifySignature(secret, signature string, params map[string]string) bool {
 	// Build the signature payload (same as headers but from query params)
 	var parts []string
 	for _, k := range keys {
-		parts = append(parts, strings.ToLower(k)+":"+params[k])
+		parts = append(parts, k+":"+params[k])
 	}
 
 	// Join with newlines (no body for callbacks)
@@ -66,6 +68,13 @@ func VerifySignature(secret, signature string, params map[string]string) bool {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(payload))
 	expected := hex.EncodeToString(h.Sum(nil))
+
+	log.Debug().
+		Str("payload", payload).
+		Str("expected", expected).
+		Str("received", signature).
+		Bool("match", subtle.ConstantTimeCompare([]byte(expected), []byte(signature)) == 1).
+		Msg("Verifying Paytrail signature")
 
 	// Constant-time comparison
 	return subtle.ConstantTimeCompare([]byte(expected), []byte(signature)) == 1
