@@ -317,6 +317,13 @@ func (s *PostgresStore) CreatePayment(ctx context.Context, payment *models.Payme
 		INSERT INTO payments (id, stream_id, email, amount_cents, status, paytrail_ref, paytrail_transaction_id, access_token, token_expiry, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`
+	// Use nil for empty access_token to avoid unique constraint violation
+	// (PostgreSQL allows multiple NULLs in unique columns)
+	var accessToken interface{}
+	if payment.AccessToken != "" {
+		accessToken = payment.AccessToken
+	}
+
 	_, err := s.pool.Exec(ctx, query,
 		payment.ID,
 		payment.StreamID,
@@ -325,7 +332,7 @@ func (s *PostgresStore) CreatePayment(ctx context.Context, payment *models.Payme
 		payment.Status,
 		payment.PaytrailRef,
 		payment.PaytrailTransactionID,
-		payment.AccessToken,
+		accessToken,
 		payment.TokenExpiry,
 		payment.CreatedAt,
 	)
@@ -458,11 +465,17 @@ func (s *PostgresStore) GetCompletedPaymentByEmailAndStream(ctx context.Context,
 // UpdatePaymentStatus updates payment status and optionally sets transaction ID and access token
 func (s *PostgresStore) UpdatePaymentStatus(ctx context.Context, id uuid.UUID, status models.PaymentStatus, transactionID, accessToken string, tokenExpiry *time.Time) error {
 	query := `
-		UPDATE payments 
+		UPDATE payments
 		SET status = $1, paytrail_transaction_id = $2, access_token = $3, token_expiry = $4
 		WHERE id = $5
 	`
-	_, err := s.pool.Exec(ctx, query, status, transactionID, accessToken, tokenExpiry, id)
+	// Use nil for empty access_token to avoid unique constraint violation
+	var accessTokenVal interface{}
+	if accessToken != "" {
+		accessTokenVal = accessToken
+	}
+
+	_, err := s.pool.Exec(ctx, query, status, transactionID, accessTokenVal, tokenExpiry, id)
 	return err
 }
 
