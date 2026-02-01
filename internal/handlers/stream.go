@@ -3,6 +3,7 @@ package handlers
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"regexp"
@@ -29,21 +30,23 @@ type streamCacheEntry struct {
 
 // StreamHandler handles stream-related endpoints
 type StreamHandler struct {
-	cfg         *config.Config
-	pgStore     *storage.PostgresStore
-	redis       *storage.RedisStore
-	urlSigner   *security.URLSigner
-	client      *http.Client
-	streamCache sync.Map // uuid.UUID -> *streamCacheEntry
+	cfg            *config.Config
+	pgStore        *storage.PostgresStore
+	redis          *storage.RedisStore
+	urlSigner      *security.URLSigner
+	sessionManager *security.SessionManager
+	client         *http.Client
+	streamCache    sync.Map // uuid.UUID -> *streamCacheEntry
 }
 
 // NewStreamHandler creates a new stream handler
 func NewStreamHandler(cfg *config.Config, pgStore *storage.PostgresStore, redis *storage.RedisStore) *StreamHandler {
 	return &StreamHandler{
-		cfg:       cfg,
-		pgStore:   pgStore,
-		redis:     redis,
-		urlSigner: security.NewURLSigner(cfg.SigningSecret, cfg.SignatureValidity),
+		cfg:            cfg,
+		pgStore:        pgStore,
+		redis:          redis,
+		urlSigner:      security.NewURLSigner(cfg.SigningSecret, cfg.SignatureValidity),
+		sessionManager: security.NewSessionManager(redis, cfg.SessionDuration, cfg.HeartbeatTimeout),
 		client: &http.Client{
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
@@ -312,11 +315,16 @@ func (h *StreamHandler) ListStreams(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, streams)
 }
 
+// HeartbeatRequest represents the heartbeat request body
+type HeartbeatRequest struct {
+	DeviceID string `json:"device_id"`
+}
+
 // Heartbeat updates the session last seen time
 // POST /api/stream/{id}/heartbeat
 func (h *StreamHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	streamID := r.PathValue("id")
-	
+
 	// Get token from cookie or header
 	token := ""
 	if cookie, err := r.Cookie("access_token"); err == nil {
@@ -329,32 +337,68 @@ func (h *StreamHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusUnauthorized, "Missing access token")
 		return
 	}
-	
+
+	// Parse request body for device ID
+	var req HeartbeatRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			// Device ID is optional for backwards compatibility
+			req.DeviceID = ""
+		}
+	}
+
 	ctx := r.Context()
-	
+
 	// Validate token
 	payment, err := h.pgStore.GetPaymentByAccessToken(ctx, token)
 	if err != nil || payment == nil || !payment.IsTokenValid() {
 		writeJSONError(w, http.StatusUnauthorized, "Invalid or expired token")
 		return
 	}
-	
+
 	// Verify stream ID matches
 	if streamID != payment.StreamID.String() {
 		writeJSONError(w, http.StatusForbidden, "Token not valid for this stream")
 		return
 	}
-	
+
+	// Validate device if device ID is provided
+	if req.DeviceID != "" {
+		ip := r.RemoteAddr
+		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+			ip = forwarded
+		}
+		userAgent := r.Header.Get("User-Agent")
+
+		result, err := h.sessionManager.ValidateDevice(ctx, token, req.DeviceID, ip, userAgent)
+		if err != nil {
+			log.Error().Err(err).Str("token", token[:8]+"...").Msg("Device validation error")
+			writeJSONError(w, http.StatusInternalServerError, "Device validation failed")
+			return
+		}
+
+		if !result.Allowed {
+			log.Warn().
+				Str("token", token[:8]+"...").
+				Str("device_id", req.DeviceID).
+				Str("active_device", result.ActiveDevice).
+				Dur("wait_time", result.WaitTime).
+				Msg("Device rejected - another device is active")
+			writeJSONError(w, http.StatusConflict, "Another device is currently watching this stream")
+			return
+		}
+	}
+
 	// Refresh session TTL
 	h.redis.RefreshSession(ctx, token, h.cfg.SessionDuration)
-	
+
 	// Track active session for viewer count (TTL slightly longer than heartbeat interval)
 	h.redis.TrackActiveSession(ctx, payment.StreamID, token, 45*time.Second)
-	
+
 	// Generate fresh signed playlist URL for the client
 	playlistPath := "/stream/" + streamID + "/hls/stream.m3u8"
 	signedURL := h.cfg.BaseURL + h.urlSigner.SignURL(streamID, token, playlistPath)
-	
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success":      true,
 		"message":      "Heartbeat received",

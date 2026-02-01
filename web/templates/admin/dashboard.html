@@ -1,159 +1,181 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Dashboard - Admin</title>
-    <link rel="stylesheet" href="/static/css/style.css">
-    <link rel="stylesheet" href="/static/css/admin.css">
-</head>
-<body class="admin-body">
+    <link rel="stylesheet" href="/static/css/style.css" />
+    <link rel="stylesheet" href="/static/css/admin.css" />
+  </head>
+  <body class="admin-body">
     <nav class="admin-nav">
-        <div class="admin-nav-brand">
-            <a href="/admin">Admin Panel</a>
-        </div>
-        <div class="admin-nav-links">
-            <a href="/admin" class="active">Dashboard</a>
-            <a href="/admin/streams">Streams</a>
-        </div>
-        <div class="admin-nav-user">
-            <span>{{.Username}}</span>
-            <a href="/admin/logout" class="btn btn-secondary btn-sm">Logout</a>
-        </div>
+      <div class="admin-nav-brand">
+        <a href="/admin">Admin Panel</a>
+      </div>
+      <div class="admin-nav-links">
+        <a href="/admin" class="active">Dashboard</a>
+        <a href="/admin/streams">Streams</a>
+      </div>
+      <div class="admin-nav-user">
+        <span>{{.Username}}</span>
+        <a href="/admin/logout" class="btn btn-secondary btn-sm">Logout</a>
+      </div>
     </nav>
 
     <main class="admin-main">
-        <div class="admin-container">
-            <div class="admin-header">
-                <h1>Dashboard</h1>
-            </div>
-
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-icon">&#128249;</div>
-                    <div class="stat-content">
-                        <div class="stat-value">{{.Stats.TotalStreams}}</div>
-                        <div class="stat-label">Total Streams</div>
-                    </div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-icon">&#128101;</div>
-                    <div class="stat-content">
-                        <div class="stat-value">{{.Stats.ActiveViewers}}</div>
-                        <div class="stat-label">Active Viewers</div>
-                    </div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-icon">&#128176;</div>
-                    <div class="stat-content">
-                        <div class="stat-value">{{printf "%.2f" .Stats.TotalRevenueEuros}} &euro;</div>
-                        <div class="stat-label">Total Revenue</div>
-                    </div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-icon">&#9989;</div>
-                    <div class="stat-content">
-                        <div class="stat-value">{{.Stats.CompletedPayments}}</div>
-                        <div class="stat-label">Completed Payments</div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="admin-section">
-                <div class="section-header">
-                    <h2>Active Streams</h2>
-                    <a href="/admin/streams/new" class="btn btn-primary btn-sm">New Stream</a>
-                </div>
-                
-                {{if .LiveStreams}}
-                <div class="stream-list">
-                    {{range .LiveStreams}}
-                    <div class="stream-item">
-                        <div class="stream-info">
-                            <h3>{{.Title}}</h3>
-                            <span class="status-badge status-live">Live</span>
-                        </div>
-                        <div class="stream-stats">
-                            <span class="viewer-count" data-stream-id="{{.ID}}">-- viewers</span>
-                        </div>
-                        <div class="stream-actions">
-                            <a href="/admin/streams/{{.ID}}/edit" class="btn btn-secondary btn-sm">Edit</a>
-                            <form method="POST" action="/admin/streams/{{.ID}}/status" style="display:inline;">
-                                <input type="hidden" name="status" value="ended">
-                                <button type="submit" class="btn btn-secondary btn-sm">End Stream</button>
-                            </form>
-                        </div>
-                    </div>
-                    {{end}}
-                </div>
-                {{else}}
-                <div class="empty-state">
-                    <p>No live streams currently.</p>
-                    <a href="/admin/streams/new" class="btn btn-primary">Create Stream</a>
-                </div>
-                {{end}}
-            </div>
-
-            <div class="admin-section">
-                <div class="section-header">
-                    <h2>Recent Payments</h2>
-                </div>
-                
-                {{if .RecentPayments}}
-                <table class="admin-table">
-                    <thead>
-                        <tr>
-                            <th>Email</th>
-                            <th>Stream</th>
-                            <th>Amount</th>
-                            <th>Status</th>
-                            <th>Date</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {{range .RecentPayments}}
-                        <tr>
-                            <td>{{.Email}}</td>
-                            <td>{{.StreamTitle}}</td>
-                            <td>{{printf "%.2f" .AmountEuros}} &euro;</td>
-                            <td>
-                                <span class="status-badge status-{{.Status}}">{{.Status}}</span>
-                            </td>
-                            <td>{{.CreatedAt.Format "2.1.2006 15:04"}}</td>
-                        </tr>
-                        {{end}}
-                    </tbody>
-                </table>
-                {{else}}
-                <div class="empty-state">
-                    <p>No payments yet.</p>
-                </div>
-                {{end}}
-            </div>
+      <div class="admin-container">
+        <div class="admin-header">
+          <h1>Dashboard</h1>
         </div>
+
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-icon">&#128249;</div>
+            <div class="stat-content">
+              <div class="stat-value">{{.Stats.TotalStreams}}</div>
+              <div class="stat-label">Total Streams</div>
+            </div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-icon">&#128101;</div>
+            <div class="stat-content">
+              <div class="stat-value">{{.Stats.ActiveViewers}}</div>
+              <div class="stat-label">Active Viewers</div>
+            </div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-icon">&#128176;</div>
+            <div class="stat-content">
+              <div class="stat-value">
+                {{printf "%.2f" .Stats.TotalRevenueEuros}} &euro;
+              </div>
+              <div class="stat-label">Total Revenue</div>
+            </div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-icon">&#9989;</div>
+            <div class="stat-content">
+              <div class="stat-value">{{.Stats.CompletedPayments}}</div>
+              <div class="stat-label">Completed Payments</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="admin-section">
+          <div class="section-header">
+            <h2>Active Streams</h2>
+            <a href="/admin/streams/new" class="btn btn-primary btn-sm"
+              >New Stream</a
+            >
+          </div>
+
+          {{if .LiveStreams}}
+          <div class="stream-list">
+            {{range .LiveStreams}}
+            <div class="stream-item">
+              <div class="stream-info">
+                <h3>{{.Title}}</h3>
+                <span class="status-badge status-live">Live</span>
+              </div>
+              <div class="stream-stats">
+                <span class="viewer-count" data-stream-id="{{.ID}}"
+                  >-- viewers</span
+                >
+              </div>
+              <div class="stream-actions">
+                <a
+                  href="/admin/streams/{{.ID}}/edit"
+                  class="btn btn-secondary btn-sm"
+                  >Edit</a
+                >
+                <form
+                  method="POST"
+                  action="/admin/streams/{{.ID}}/status"
+                  style="display: inline"
+                >
+                  <input type="hidden" name="status" value="ended" />
+                  <button type="submit" class="btn btn-secondary btn-sm">
+                    End Stream
+                  </button>
+                </form>
+              </div>
+            </div>
+            {{end}}
+          </div>
+          {{else}}
+          <div class="empty-state">
+            <p>No live streams currently.</p>
+            <a href="/admin/streams/new" class="btn btn-primary"
+              >Create Stream</a
+            >
+          </div>
+          {{end}}
+        </div>
+
+        <div class="admin-section">
+          <div class="section-header">
+            <h2>Recent Payments</h2>
+          </div>
+
+          {{if .RecentPayments}}
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Stream</th>
+                <th>Amount</th>
+                <th>Status</th>
+                <th>Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{range .RecentPayments}}
+              <tr>
+                <td>{{.Email}}</td>
+                <td>{{.StreamTitle}}</td>
+                <td>{{printf "%.2f" .AmountEuros}} &euro;</td>
+                <td>
+                  <span class="status-badge status-{{.Status}}"
+                    >{{.Status}}</span
+                  >
+                </td>
+                <td>{{.CreatedAt.Format "2.1.2006 15:04"}}</td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+          {{else}}
+          <div class="empty-state">
+            <p>No payments yet.</p>
+          </div>
+          {{end}}
+        </div>
+      </div>
     </main>
 
     <script src="/static/js/admin.js"></script>
     <script>
-    // Fetch viewer counts for live streams
-    document.addEventListener('DOMContentLoaded', function() {
-        const viewerCounts = document.querySelectorAll('.viewer-count');
-        viewerCounts.forEach(async function(el) {
-            const streamId = el.dataset.streamId;
-            try {
-                const response = await fetch('/admin/api/streams/' + streamId + '/viewers');
-                if (response.ok) {
-                    const data = await response.json();
-                    el.textContent = data.viewer_count + ' viewers';
-                }
-            } catch (e) {
-                console.error('Failed to fetch viewer count:', e);
+      // Fetch viewer counts for live streams
+      document.addEventListener("DOMContentLoaded", function () {
+        const viewerCounts = document.querySelectorAll(".viewer-count");
+        viewerCounts.forEach(async function (el) {
+          const streamId = el.dataset.streamId;
+          try {
+            const response = await fetch(
+              "/admin/api/streams/" + streamId + "/viewers"
+            );
+            if (response.ok) {
+              const data = await response.json();
+              el.textContent = data.viewer_count + " viewers";
             }
+          } catch (e) {
+            console.error("Failed to fetch viewer count:", e);
+          }
         });
-    });
+      });
     </script>
-</body>
+  </body>
 </html>

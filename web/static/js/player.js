@@ -14,10 +14,26 @@
             this.heartbeatInterval = options.heartbeatInterval || 30000; // 30 seconds
             this.onError = options.onError || console.error;
             this.onReady = options.onReady || (() => {});
-            
+
             this.hls = null;
             this.heartbeatTimer = null;
             this.isPlaying = false;
+            this.deviceId = this.getOrCreateDeviceId();
+        }
+
+        /**
+         * Get or create a unique device ID for this browser
+         */
+        getOrCreateDeviceId() {
+            const storageKey = 'stream_device_id';
+            let deviceId = localStorage.getItem(storageKey);
+            if (!deviceId) {
+                // Generate a random device ID
+                deviceId = 'dev_' + Math.random().toString(36).substring(2, 15) +
+                           Math.random().toString(36).substring(2, 15);
+                localStorage.setItem(storageKey, deviceId);
+            }
+            return deviceId;
         }
 
         /**
@@ -200,7 +216,10 @@
                         headers: {
                             'Content-Type': 'application/json'
                         },
-                        credentials: 'include'
+                        credentials: 'include',
+                        body: JSON.stringify({
+                            device_id: this.deviceId
+                        })
                     });
 
                     if (!response.ok) {
@@ -209,6 +228,14 @@
                                 type: 'auth',
                                 code: 401,
                                 message: 'Session expired.',
+                                action: 'redirect_purchase'
+                            });
+                        } else if (response.status === 409) {
+                            // Another device is watching
+                            this.onError({
+                                type: 'auth',
+                                code: 409,
+                                message: 'This stream is being watched on another device.',
                                 action: 'redirect_purchase'
                             });
                         }
