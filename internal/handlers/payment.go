@@ -78,6 +78,12 @@ func (h *PaymentHandler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	randomPrefix, _ := generateAccessToken() // Reuse the secure random generator
 	stamp := randomPrefix[:8] + "-" + paymentID.String()
 
+	log.Info().
+		Str("stamp", stamp).
+		Str("payment_id", paymentID.String()).
+		Str("random_prefix", randomPrefix[:8]).
+		Msg("Generated payment stamp")
+
 	// Create payment record in database
 	payment := &models.Payment{
 		ID:          paymentID,

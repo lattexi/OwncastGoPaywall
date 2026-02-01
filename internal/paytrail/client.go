@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -128,6 +129,13 @@ func (c *Client) CreatePayment(ctx context.Context, req *CreatePaymentRequest) (
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	log.Debug().
+		Str("stamp", req.Stamp).
+		Str("reference", req.Reference).
+		Int("amount", req.Amount).
+		Str("body", string(body)).
+		Msg("Sending Paytrail payment request")
+
 	// Build headers for signature
 	headers := map[string]string{
 		"checkout-account":   c.merchantID,
@@ -170,6 +178,11 @@ func (c *Client) CreatePayment(ctx context.Context, req *CreatePaymentRequest) (
 
 	// Check for errors
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		log.Error().
+			Int("status", resp.StatusCode).
+			Str("response", string(respBody)).
+			Str("stamp", req.Stamp).
+			Msg("Paytrail API error")
 		return nil, fmt.Errorf("paytrail API error: status=%d body=%s", resp.StatusCode, string(respBody))
 	}
 
@@ -202,6 +215,8 @@ func (c *Client) CreateSimplePayment(ctx context.Context, req *SimplePaymentRequ
 	}
 
 	// Build full request
+	// Generate unique stamp for item (payment and item stamps must both be unique in Paytrail)
+	itemStamp := req.Stamp + "-item"
 	fullReq := &CreatePaymentRequest{
 		Stamp:     req.Stamp,
 		Reference: req.Reference,
@@ -215,7 +230,7 @@ func (c *Client) CreateSimplePayment(ctx context.Context, req *SimplePaymentRequ
 				VATPercentage: 24, // Finnish VAT
 				ProductCode:   "stream-access",
 				Description:   req.Description,
-				Stamp:         req.Stamp,
+				Stamp:         itemStamp,
 			},
 		},
 		Customer: Customer{
