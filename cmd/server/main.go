@@ -100,6 +100,9 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to initialize admin page handler")
 	}
 
+	// Initialize Owncast proxy handler
+	owncastProxyHandler := handlers.NewOwncastProxyHandler(cfg, pgStore, redisStore, adminSessionMiddleware)
+
 	// Create router
 	mux := http.NewServeMux()
 
@@ -161,6 +164,12 @@ func main() {
 	// Container management routes
 	mux.Handle("POST /admin/streams/{id}/container/start", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.StartContainer)))
 	mux.Handle("POST /admin/streams/{id}/container/stop", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.StopContainer)))
+
+	// Owncast proxy routes (reverse proxy to container admin panels)
+	mux.Handle("GET /admin/streams/{id}/owncast/{path...}", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(owncastProxyHandler.ProxyRequest)))
+	mux.Handle("POST /admin/streams/{id}/owncast/{path...}", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(owncastProxyHandler.ProxyRequest)))
+	mux.Handle("PUT /admin/streams/{id}/owncast/{path...}", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(owncastProxyHandler.ProxyRequest)))
+	mux.Handle("DELETE /admin/streams/{id}/owncast/{path...}", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(owncastProxyHandler.ProxyRequest)))
 
 	// Admin API for AJAX requests (protected by session)
 	mux.Handle("GET /admin/api/streams/{id}/viewers", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.GetViewerCountAPI)))

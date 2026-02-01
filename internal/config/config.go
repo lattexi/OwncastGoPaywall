@@ -40,11 +40,12 @@ type Config struct {
 	RecoveryRateLimitPerIP    int
 
 	// Docker / Owncast Container Management
-	DockerHost       string // Docker socket path (e.g., unix:///var/run/docker.sock)
-	DockerNetwork    string // Docker network for containers (e.g., "internal")
-	OwncastImage     string // Owncast Docker image
-	RTMPPortStart    int    // Starting port for RTMP (e.g., 19350)
-	RTMPPublicHost   string // Public hostname for RTMP URLs (shown in admin)
+	DockerHost          string // Docker socket path (e.g., unix:///var/run/docker.sock)
+	DockerNetwork       string // Docker network for containers (e.g., "internal")
+	OwncastImage        string // Owncast Docker image
+	RTMPPortStart       int    // Starting port for RTMP (e.g., 19350)
+	RTMPPublicHost      string // Public hostname for RTMP URLs (shown in admin)
+	OwncastAdminPassword string // Owncast admin password (default: "abc123")
 }
 
 // Load reads configuration from environment variables
@@ -77,11 +78,12 @@ func Load() (*Config, error) {
 		RecoveryRateLimitPerIP:    20,
 
 		// Docker defaults
-		DockerHost:     getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
-		DockerNetwork:  getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
-		OwncastImage:   getEnv("OWNCAST_IMAGE", "owncast/owncast:latest"),
-		RTMPPortStart:  getEnvInt("RTMP_PORT_START", 19350),
-		RTMPPublicHost: getEnv("RTMP_PUBLIC_HOST", "localhost"),
+		DockerHost:           getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
+		DockerNetwork:        getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
+		OwncastImage:         getEnv("OWNCAST_IMAGE", "owncast/owncast:latest"),
+		RTMPPortStart:        getEnvInt("RTMP_PORT_START", 19350),
+		RTMPPublicHost:       getEnv("RTMP_PUBLIC_HOST", "localhost"),
+		OwncastAdminPassword: getEnv("OWNCAST_ADMIN_PASSWORD", "abc123"),
 	}
 
 	// Parse durations
@@ -145,11 +147,12 @@ func LoadWithDefaults() *Config {
 			AdminInitialPassword:      getEnv("ADMIN_INITIAL_PASSWORD", "admin"),
 			RecoveryRateLimitPerEmail: 5,
 			RecoveryRateLimitPerIP:    20,
-			DockerHost:                getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
-			DockerNetwork:             getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
-			OwncastImage:              getEnv("OWNCAST_IMAGE", "owncast/owncast:latest"),
-			RTMPPortStart:             getEnvInt("RTMP_PORT_START", 19350),
-			RTMPPublicHost:            getEnv("RTMP_PUBLIC_HOST", "localhost"),
+			DockerHost:           getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
+			DockerNetwork:        getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
+			OwncastImage:         getEnv("OWNCAST_IMAGE", "owncast/owncast:latest"),
+			RTMPPortStart:        getEnvInt("RTMP_PORT_START", 19350),
+			RTMPPublicHost:       getEnv("RTMP_PUBLIC_HOST", "localhost"),
+			OwncastAdminPassword: getEnv("OWNCAST_ADMIN_PASSWORD", "abc123"),
 		}
 	}
 	return cfg

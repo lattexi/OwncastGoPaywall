@@ -70,6 +70,15 @@
                         <label>Container Name</label>
                         <code>{{.Stream.ContainerName}}</code>
                     </div>
+
+                    {{if eq .Stream.ContainerStatus "running"}}
+                    <div class="streaming-info-item">
+                        <label>Owncast Settings</label>
+                        <a href="/admin/streams/{{.Stream.ID}}/owncast/admin/" class="btn btn-primary" target="_blank">
+                            Avaa Owncast-asetukset
+                        </a>
+                    </div>
+                    {{end}}
                 </div>
                 
                 <div class="streaming-instructions">
