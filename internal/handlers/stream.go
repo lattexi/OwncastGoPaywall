@@ -54,6 +54,7 @@ type StreamHandler struct {
 	streamCache    sync.Map            // uuid.UUID -> *streamCacheEntry
 	playlistCache  sync.Map            // string (owncastURL) -> *playlistCacheEntry
 	segmentCache   sync.Map            // string (owncastURL) -> *segmentCacheEntry
+	playlistFlight singleflight.Group  // deduplicates concurrent playlist fetches
 	segmentFlight  singleflight.Group  // deduplicates concurrent segment fetches
 }
 
@@ -67,10 +68,11 @@ func NewStreamHandler(cfg *config.Config, pgStore *storage.PostgresStore, redis 
 		sessionManager: security.NewSessionManager(redis, cfg.SessionDuration, cfg.HeartbeatTimeout),
 		client: &http.Client{
 			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 100,
+				MaxIdleConns:        1000,            // Increased for high viewer counts
+				MaxIdleConnsPerHost: 100,             // Per Owncast container
+				MaxConnsPerHost:     0,               // No limit
 				IdleConnTimeout:     90 * time.Second,
-				DisableCompression:  true, // Video segments are already compressed
+				DisableCompression:  true,            // Video segments are already compressed
 			},
 			Timeout: 30 * time.Second,
 		},
@@ -220,36 +222,48 @@ func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, st
 		}
 	}
 
-	// If not in cache, fetch from Owncast
+	// If not in cache, fetch from Owncast using singleflight to deduplicate concurrent requests
 	if originalPlaylist == "" {
-		resp, err := h.client.Get(owncastURL)
+		result, err, _ := h.playlistFlight.Do(owncastURL, func() (interface{}, error) {
+			// Double-check cache (another goroutine might have populated it)
+			if entry, ok := h.playlistCache.Load(owncastURL); ok {
+				e := entry.(*playlistCacheEntry)
+				if time.Now().Before(e.expiresAt) {
+					return e.content, nil
+				}
+			}
+
+			resp, err := h.client.Get(owncastURL)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				return nil, fmt.Errorf("owncast returned status %d", resp.StatusCode)
+			}
+
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return nil, err
+			}
+			content := string(body)
+
+			// Cache for 2 seconds (HLS segments are typically 2-6 seconds)
+			h.playlistCache.Store(owncastURL, &playlistCacheEntry{
+				content:   content,
+				expiresAt: time.Now().Add(2 * time.Second),
+			})
+
+			return content, nil
+		})
+
 		if err != nil {
 			log.Error().Err(err).Str("url", owncastURL).Msg("Failed to fetch playlist")
 			http.Error(w, "Failed to fetch stream", http.StatusBadGateway)
 			return
 		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			log.Warn().Int("status", resp.StatusCode).Str("url", owncastURL).Msg("Owncast returned non-200")
-			http.Error(w, "Stream not available", resp.StatusCode)
-			return
-		}
-
-		// Read playlist content
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to read playlist")
-			http.Error(w, "Failed to fetch stream", http.StatusBadGateway)
-			return
-		}
-		originalPlaylist = string(body)
-
-		// Cache for 1 second (HLS segments are typically 2-6 seconds)
-		h.playlistCache.Store(owncastURL, &playlistCacheEntry{
-			content:   originalPlaylist,
-			expiresAt: time.Now().Add(1 * time.Second),
-		})
+		originalPlaylist = result.(string)
 	}
 
 	// Rewrite playlist with signed URLs for this user's token
