@@ -261,7 +261,7 @@ func (h *AdminPageHandler) ListStreams(w http.ResponseWriter, r *http.Request) {
 		streamsWithStats = append(streamsWithStats, StreamWithStats{
 			Stream:     s,
 			PriceEuros: float64(s.PriceCents) / 100,
-			RTMPURL:    docker.GetRTMPURL(h.cfg.RTMPPublicHost, s.RTMPPort),
+			RTMPURL:    docker.GetRTMPURL(h.cfg.RTMPPublicHost, s.RTMPPort, s.Slug),
 		})
 	}
 
@@ -450,7 +450,7 @@ func (h *AdminPageHandler) EditStreamForm(w http.ResponseWriter, r *http.Request
 		Stream: &StreamWithStats{
 			Stream:     stream,
 			PriceEuros: float64(stream.PriceCents) / 100,
-			RTMPURL:    docker.GetRTMPURL(h.cfg.RTMPPublicHost, stream.RTMPPort),
+			RTMPURL:    docker.GetRTMPURL(h.cfg.RTMPPublicHost, stream.RTMPPort, stream.Slug),
 		},
 		IsEdit:   true,
 		AdminKey: h.cfg.AdminAPIKey,

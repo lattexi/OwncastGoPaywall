@@ -61,22 +61,24 @@ func main() {
 	// Create initial admin user if configured and no admins exist
 	createInitialAdminUser(ctx, cfg, pgStore)
 
-	// Initialize Docker manager (optional - may not be available in all environments)
+	// Initialize Docker manager for SRS containers (optional - may not be available in all environments)
 	var dockerMgr *docker.Manager
 	dockerMgr, err = docker.NewManager(&docker.Config{
 		DockerHost:    cfg.DockerHost,
 		NetworkName:   cfg.DockerNetwork,
-		OwncastImage:  cfg.OwncastImage,
+		SRSImage:      cfg.SRSImage,
+		ConfigDir:     cfg.SRSConfigDir,
 		RTMPPortStart: cfg.RTMPPortStart,
-		CPULimit:      cfg.OwncastCPULimit,
-		MemoryLimit:   cfg.OwncastMemoryLimit,
+		CPULimit:      cfg.SRSCPULimit,
+		MemoryLimit:   cfg.SRSMemoryLimit,
+		CallbackURL:   cfg.BaseURL, // SRS will call back to this URL for authentication
 	})
 	if err != nil {
 		log.Warn().Err(err).Msg("Docker manager not available - container management disabled")
 		dockerMgr = nil
 	} else {
 		defer dockerMgr.Close()
-		log.Info().Msg("Docker manager initialized")
+		log.Info().Msg("Docker manager initialized for SRS")
 	}
 
 	// Initialize handlers
@@ -102,8 +104,8 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to initialize admin page handler")
 	}
 
-	// Initialize Owncast proxy handler
-	owncastProxyHandler := handlers.NewOwncastProxyHandler(cfg, pgStore, redisStore, adminSessionMiddleware)
+	// Initialize SRS callback handler
+	srsCallbackHandler := handlers.NewSRSCallbackHandler(pgStore)
 
 	// Create router
 	mux := http.NewServeMux()
@@ -172,9 +174,9 @@ func main() {
 	mux.Handle("POST /admin/streams/{id}/container/start", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.StartContainer)))
 	mux.Handle("POST /admin/streams/{id}/container/stop", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.StopContainer)))
 
-	// Owncast API routes (for managing Owncast container settings)
-	mux.Handle("GET /admin/api/streams/{id}/owncast/settings", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(owncastProxyHandler.GetVideoSettings)))
-	mux.Handle("POST /admin/api/streams/{id}/owncast/settings", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(owncastProxyHandler.UpdateVideoSettings)))
+	// SRS callback routes (called by SRS for stream authentication)
+	mux.HandleFunc("POST /api/srs/on_publish", srsCallbackHandler.OnPublish)
+	mux.HandleFunc("POST /api/srs/on_unpublish", srsCallbackHandler.OnUnpublish)
 
 	// Admin API for AJAX requests (protected by session)
 	mux.Handle("GET /admin/api/streams/{id}/viewers", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.GetViewerCountAPI)))

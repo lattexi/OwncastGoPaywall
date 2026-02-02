@@ -39,15 +39,15 @@ type Config struct {
 	RecoveryRateLimitPerEmail int
 	RecoveryRateLimitPerIP    int
 
-	// Docker / Owncast Container Management
-	DockerHost           string // Docker socket path (e.g., unix:///var/run/docker.sock)
-	DockerNetwork        string // Docker network for containers (e.g., "internal")
-	OwncastImage         string // Owncast Docker image
-	RTMPPortStart        int    // Starting port for RTMP (e.g., 19350)
-	RTMPPublicHost       string // Public hostname for RTMP URLs (shown in admin)
-	OwncastAdminPassword string // Owncast admin password (default: "abc123")
-	OwncastCPULimit      int64  // CPU limit in cores (e.g., 4 = 4 cores)
-	OwncastMemoryLimit   int64  // Memory limit in MB (e.g., 4096 = 4GB)
+	// Docker / SRS Container Management
+	DockerHost     string // Docker socket path (e.g., unix:///var/run/docker.sock)
+	DockerNetwork  string // Docker network for containers (e.g., "internal")
+	SRSImage       string // SRS Docker image (e.g., ossrs/srs:5)
+	SRSConfigDir   string // Directory for SRS config files; when running in Docker, must be a path bind-mounted from the host so the daemon can mount it into SRS containers
+	RTMPPortStart  int    // Starting port for RTMP (e.g., 19350)
+	RTMPPublicHost string // Public hostname for RTMP URLs (shown in admin)
+	SRSCPULimit    int64  // CPU limit in nanocpus (e.g., 500000000 = 0.5 cores)
+	SRSMemoryLimit int64  // Memory limit in MB (e.g., 512)
 }
 
 // Load reads configuration from environment variables
@@ -79,15 +79,15 @@ func Load() (*Config, error) {
 		RecoveryRateLimitPerEmail: 5,
 		RecoveryRateLimitPerIP:    20,
 
-		// Docker defaults
-		DockerHost:           getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
-		DockerNetwork:        getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
-		OwncastImage:         getEnv("OWNCAST_IMAGE", "owncast/owncast:latest"),
-		RTMPPortStart:        getEnvInt("RTMP_PORT_START", 19350),
-		RTMPPublicHost:       getEnv("RTMP_PUBLIC_HOST", "localhost"),
-		OwncastAdminPassword: getEnv("OWNCAST_ADMIN_PASSWORD", "abc123"),
-		OwncastCPULimit:      int64(getEnvInt("OWNCAST_CPU_LIMIT", 4)),      // 4 cores default
-		OwncastMemoryLimit:   int64(getEnvInt("OWNCAST_MEMORY_LIMIT", 4096)), // 4GB default
+		// Docker / SRS defaults
+		DockerHost:     getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
+		DockerNetwork:  getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
+		SRSImage:       getEnv("SRS_IMAGE", "ossrs/srs:5"),
+		SRSConfigDir:   getEnv("SRS_CONFIG_DIR", ""), // When empty, docker manager uses /tmp/srs-configs
+		RTMPPortStart:  getEnvInt("RTMP_PORT_START", 19350),
+		RTMPPublicHost: getEnv("RTMP_PUBLIC_HOST", "localhost"),
+		SRSCPULimit:    int64(getEnvInt("SRS_CPU_LIMIT", 500000000)),  // 0.5 cores default (nanocpus)
+		SRSMemoryLimit: int64(getEnvInt("SRS_MEMORY_LIMIT", 512)),    // 512MB default
 	}
 
 	// Parse durations
@@ -151,14 +151,14 @@ func LoadWithDefaults() *Config {
 			AdminInitialPassword:      getEnv("ADMIN_INITIAL_PASSWORD", "admin"),
 			RecoveryRateLimitPerEmail: 5,
 			RecoveryRateLimitPerIP:    20,
-			DockerHost:           getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
-			DockerNetwork:        getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
-			OwncastImage:         getEnv("OWNCAST_IMAGE", "owncast/owncast:latest"),
-			RTMPPortStart:        getEnvInt("RTMP_PORT_START", 19350),
-			RTMPPublicHost:       getEnv("RTMP_PUBLIC_HOST", "localhost"),
-			OwncastAdminPassword: getEnv("OWNCAST_ADMIN_PASSWORD", "abc123"),
-			OwncastCPULimit:      4,
-			OwncastMemoryLimit:   4096,
+			DockerHost:     getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
+			DockerNetwork:  getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
+			SRSImage:       getEnv("SRS_IMAGE", "ossrs/srs:5"),
+			SRSConfigDir:   getEnv("SRS_CONFIG_DIR", ""),
+			RTMPPortStart:  getEnvInt("RTMP_PORT_START", 19350),
+			RTMPPublicHost: getEnv("RTMP_PUBLIC_HOST", "localhost"),
+			SRSCPULimit:    500000000, // 0.5 cores (nanocpus)
+			SRSMemoryLimit: 512,       // 512MB
 		}
 	}
 	return cfg

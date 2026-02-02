@@ -1,0 +1,36 @@
+# SRS Configuration Template
+# This template is rendered with Go text/template
+# Variables: {{.CallbackURL}}, {{.Slug}}
+
+listen              1935;
+max_connections     1000;
+daemon              off;
+
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+
+http_api {
+    enabled         on;
+    listen          1985;
+}
+
+vhost __defaultVhost__ {
+    hls {
+        enabled         on;
+        hls_fragment    2;
+        hls_window      6;
+        hls_path        ./objs/nginx/html;
+        hls_m3u8_file   live/[stream].m3u8;
+        hls_ts_file     live/[stream]-[seq].ts;
+        hls_cleanup     on;
+    }
+
+    http_hooks {
+        enabled         on;
+        on_publish      {{.CallbackURL}}/api/srs/on_publish;
+        on_unpublish    {{.CallbackURL}}/api/srs/on_unpublish;
+    }
+}

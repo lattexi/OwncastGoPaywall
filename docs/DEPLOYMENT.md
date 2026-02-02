@@ -51,6 +51,8 @@ docker compose ps
 docker compose logs -f paywall
 ```
 
+SRS config files are stored in `/var/lib/stream-paywall/srs-configs` (bind-mounted so the Docker daemon can mount them into SRS containers). On first run, create it if your environment does not create it automatically: `sudo mkdir -p /var/lib/stream-paywall/srs-configs`.
+
 ## Reverse Proxy Setup (Nginx)
 
 The paywall server should be behind a reverse proxy for HTTPS termination.

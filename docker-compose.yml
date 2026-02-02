@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
-      # Note: RTMP ports (19350-19399) are exposed directly by dynamic Owncast containers
+      # Note: RTMP ports (19350-19399) are exposed directly by dynamic SRS containers
     environment:
       - ENV=production
       - BASE_URL=${BASE_URL:-http://localhost:3000}
@@ -22,17 +22,22 @@ services:
       - SESSION_DURATION=${SESSION_DURATION:-24h}
       - HEARTBEAT_TIMEOUT=${HEARTBEAT_TIMEOUT:-45s}
       - SIGNATURE_VALIDITY=${SIGNATURE_VALIDITY:-24h}
-      # Docker management configuration
-      - OWNCAST_CPU_LIMIT=${OWNCAST_CPU_LIMIT:-4}
-      - OWNCAST_MEMORY_LIMIT=${OWNCAST_MEMORY_LIMIT:-4096}
+      # Docker management configuration for SRS containers
+      - SRS_CPU_LIMIT=${SRS_CPU_LIMIT:-500000000}
+      - SRS_MEMORY_LIMIT=${SRS_MEMORY_LIMIT:-512}
       - DOCKER_HOST=unix:///var/run/docker.sock
       - DOCKER_NETWORK=owncastgopaywall_internal
-      - OWNCAST_IMAGE=${OWNCAST_IMAGE:-owncast/owncast:latest}
+      - SRS_IMAGE=${SRS_IMAGE:-ossrs/srs:5}
       - RTMP_PORT_START=${RTMP_PORT_START:-19350}
       - RTMP_PUBLIC_HOST=${RTMP_PUBLIC_HOST:-localhost}
+      # SRS config dir: must be a path that is bind-mounted from the host so the Docker
+      # daemon can mount the same path into SRS containers (default below matches the volume)
+      - SRS_CONFIG_DIR=${SRS_CONFIG_DIR:-/var/lib/stream-paywall/srs-configs}
     volumes:
       # Mount Docker socket for container management
       - /var/run/docker.sock:/var/run/docker.sock
+      # SRS config files: bind mount so path is the same on host and in container (required for SRS container bind mounts)
+      - /var/lib/stream-paywall/srs-configs:/var/lib/stream-paywall/srs-configs
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,8 +61,8 @@ services:
       retries: 3
       start_period: 10s
 
-  # Note: Owncast containers are now created dynamically by the paywall server
-  # Each stream gets its own isolated Owncast instance with a unique RTMP port
+  # Note: SRS containers are created dynamically by the paywall server
+  # Each stream gets its own isolated SRS instance with a unique RTMP port
 
   # PostgreSQL - Internal only
   postgres:
@@ -100,8 +105,8 @@ networks:
   public:
     driver: bridge
 
-  # Internal network - for internal services and dynamic Owncast containers
-  # Note: Dynamic Owncast containers join this network for HLS proxying
+  # Internal network - for internal services and dynamic SRS containers
+  # Note: Dynamic SRS containers join this network for HLS proxying
   # but expose RTMP ports directly on the host for OBS connections
   internal:
     driver: bridge

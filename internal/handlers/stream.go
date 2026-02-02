@@ -51,9 +51,9 @@ type StreamHandler struct {
 	sessionManager *security.SessionManager
 	client         *http.Client
 	streamCache    sync.Map            // uuid.UUID -> *streamCacheEntry
-	playlistCache  sync.Map            // string (owncastURL) -> *playlistCacheEntry
+	playlistCache  sync.Map            // string (srsURL) -> *playlistCacheEntry
 	rewrittenCache sync.Map            // string (streamID:token:hlsPath) -> *playlistCacheEntry
-	segmentCache   sync.Map            // string (owncastURL) -> *segmentCacheEntry
+	segmentCache   sync.Map            // string (srsURL) -> *segmentCacheEntry
 	playlistFlight singleflight.Group  // deduplicates concurrent playlist fetches
 	segmentFlight  singleflight.Group  // deduplicates concurrent segment fetches
 }
@@ -68,7 +68,7 @@ func NewStreamHandler(cfg *config.Config, pgStore *storage.PostgresStore, redis 
 		client: &http.Client{
 			Transport: &http.Transport{
 				MaxIdleConns:        1000,            // Increased for high viewer counts
-				MaxIdleConnsPerHost: 100,             // Per Owncast container
+				MaxIdleConnsPerHost: 100,             // Per SRS container
 				MaxConnsPerHost:     0,               // No limit
 				IdleConnTimeout:     90 * time.Second,
 				DisableCompression:  true,            // Video segments are already compressed
@@ -178,18 +178,27 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build internal Owncast URL
-	owncastURL := strings.TrimSuffix(stream.OwncastURL, "/") + "/hls/" + hlsPath
+	// Build internal SRS URL
+	// SRS HLS paths: /live/{slug}.m3u8 for playlist, /live/{slug}-{seq}.ts for segments
+	var srsPath string
+	if hlsPath == "stream.m3u8" {
+		// Map generic playlist request to SRS format using the slug
+		srsPath = fmt.Sprintf("live/%s.m3u8", stream.Slug)
+	} else {
+		// Segments and other files are already named correctly by SRS (e.g., {slug}-0.ts)
+		srsPath = "live/" + hlsPath
+	}
+	srsURL := fmt.Sprintf("http://srs-%s:8080/%s", stream.Slug, srsPath)
 
 	if isPlaylist {
-		h.servePlaylist(w, r, stream, owncastURL, token, hlsPath)
+		h.servePlaylist(w, r, stream, srsURL, token, hlsPath)
 	} else {
-		h.serveSegment(w, r, owncastURL)
+		h.serveSegment(w, r, srsURL)
 	}
 }
 
 // servePlaylist fetches and rewrites an HLS playlist
-func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, stream *models.Stream, owncastURL, token string, hlsPath string) {
+func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, stream *models.Stream, srsURL, token string, hlsPath string) {
 	streamID := stream.ID.String()
 
 	// Check rewritten playlist cache first (per-token cache)
@@ -213,36 +222,36 @@ func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, st
 		baseDir = hlsPath[:idx+1] // Include trailing slash
 	}
 
-	// Try to get original playlist from cache (reduces load on Owncast for concurrent viewers)
+	// Try to get original playlist from cache (reduces load on SRS for concurrent viewers)
 	var originalPlaylist string
-	if entry, ok := h.playlistCache.Load(owncastURL); ok {
+	if entry, ok := h.playlistCache.Load(srsURL); ok {
 		e := entry.(*playlistCacheEntry)
 		if time.Now().Before(e.expiresAt) {
 			originalPlaylist = e.content
 		} else {
-			h.playlistCache.Delete(owncastURL)
+			h.playlistCache.Delete(srsURL)
 		}
 	}
 
-	// If not in cache, fetch from Owncast using singleflight to deduplicate concurrent requests
+	// If not in cache, fetch from SRS using singleflight to deduplicate concurrent requests
 	if originalPlaylist == "" {
-		result, err, _ := h.playlistFlight.Do(owncastURL, func() (interface{}, error) {
+		result, err, _ := h.playlistFlight.Do(srsURL, func() (interface{}, error) {
 			// Double-check cache (another goroutine might have populated it)
-			if entry, ok := h.playlistCache.Load(owncastURL); ok {
+			if entry, ok := h.playlistCache.Load(srsURL); ok {
 				e := entry.(*playlistCacheEntry)
 				if time.Now().Before(e.expiresAt) {
 					return e.content, nil
 				}
 			}
 
-			resp, err := h.client.Get(owncastURL)
+			resp, err := h.client.Get(srsURL)
 			if err != nil {
 				return nil, err
 			}
 			defer resp.Body.Close()
 
 			if resp.StatusCode != http.StatusOK {
-				return nil, fmt.Errorf("owncast returned status %d", resp.StatusCode)
+				return nil, fmt.Errorf("SRS returned status %d", resp.StatusCode)
 			}
 
 			body, err := io.ReadAll(resp.Body)
@@ -252,7 +261,7 @@ func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, st
 			content := string(body)
 
 			// Cache for 4 seconds (HLS segments are typically 2-6 seconds)
-			h.playlistCache.Store(owncastURL, &playlistCacheEntry{
+			h.playlistCache.Store(srsURL, &playlistCacheEntry{
 				content:   content,
 				expiresAt: time.Now().Add(4 * time.Second),
 			})
@@ -261,7 +270,7 @@ func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, st
 		})
 
 		if err != nil {
-			log.Error().Err(err).Str("url", owncastURL).Msg("Failed to fetch playlist")
+			log.Error().Err(err).Str("url", srsURL).Msg("Failed to fetch playlist")
 			http.Error(w, "Failed to fetch stream", http.StatusBadGateway)
 			return
 		}
@@ -330,10 +339,10 @@ func (h *StreamHandler) rewritePlaylist(body io.Reader, streamID, token, baseDir
 	return result.String(), nil
 }
 
-// serveSegment proxies a video segment from Owncast with server-side caching
-func (h *StreamHandler) serveSegment(w http.ResponseWriter, r *http.Request, owncastURL string) {
-	// Try to get segment from cache (reduces load on Owncast for concurrent viewers)
-	if entry, ok := h.segmentCache.Load(owncastURL); ok {
+// serveSegment proxies a video segment from SRS with server-side caching
+func (h *StreamHandler) serveSegment(w http.ResponseWriter, r *http.Request, srsURL string) {
+	// Try to get segment from cache (reduces load on SRS for concurrent viewers)
+	if entry, ok := h.segmentCache.Load(srsURL); ok {
 		e := entry.(*segmentCacheEntry)
 		if time.Now().Before(e.expiresAt) {
 			// Cache hit - serve from memory
@@ -344,30 +353,30 @@ func (h *StreamHandler) serveSegment(w http.ResponseWriter, r *http.Request, own
 			return
 		}
 		// Expired, delete it
-		h.segmentCache.Delete(owncastURL)
+		h.segmentCache.Delete(srsURL)
 	}
 
 	// Cache miss - use singleflight to deduplicate concurrent fetches
 	// When 10,000 viewers request the same new segment simultaneously,
-	// only ONE request fetches from Owncast, others wait and share the result
-	result, err, _ := h.segmentFlight.Do(owncastURL, func() (interface{}, error) {
+	// only ONE request fetches from SRS, others wait and share the result
+	result, err, _ := h.segmentFlight.Do(srsURL, func() (interface{}, error) {
 		// Double-check cache (another goroutine might have populated it)
-		if entry, ok := h.segmentCache.Load(owncastURL); ok {
+		if entry, ok := h.segmentCache.Load(srsURL); ok {
 			e := entry.(*segmentCacheEntry)
 			if time.Now().Before(e.expiresAt) {
 				return e, nil
 			}
 		}
 
-		// Fetch from Owncast
-		resp, err := h.client.Get(owncastURL)
+		// Fetch from SRS
+		resp, err := h.client.Get(srsURL)
 		if err != nil {
 			return nil, err
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("owncast returned status %d", resp.StatusCode)
+			return nil, fmt.Errorf("SRS returned status %d", resp.StatusCode)
 		}
 
 		// Read the segment into memory
@@ -390,14 +399,14 @@ func (h *StreamHandler) serveSegment(w http.ResponseWriter, r *http.Request, own
 
 		// Cache if under 5MB
 		if len(data) < 5*1024*1024 {
-			h.segmentCache.Store(owncastURL, entry)
+			h.segmentCache.Store(srsURL, entry)
 		}
 
 		return entry, nil
 	})
 
 	if err != nil {
-		log.Error().Err(err).Str("url", owncastURL).Msg("Failed to fetch segment")
+		log.Error().Err(err).Str("url", srsURL).Msg("Failed to fetch segment")
 		http.Error(w, "Failed to fetch segment", http.StatusBadGateway)
 		return
 	}
@@ -431,7 +440,7 @@ func (h *StreamHandler) GetStreamInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// Return public info (OwncastURL is omitted via json:"-" tag)
+	// Return public info (SRSURL is omitted via json:"-" tag)
 	writeJSON(w, http.StatusOK, stream)
 }
 
@@ -446,7 +455,7 @@ func (h *StreamHandler) ListStreams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// OwncastURL is already hidden by json:"-" tag
+	// SRSURL is already hidden by json:"-" tag
 	writeJSON(w, http.StatusOK, streams)
 }
 
