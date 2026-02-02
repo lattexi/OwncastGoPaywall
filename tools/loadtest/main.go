@@ -25,9 +25,11 @@ import (
 
 // Config holds test configuration
 type Config struct {
-	BaseURL  string
-	StreamID string
-	Token    string
+	BaseURL    string
+	StreamID   string
+	Token      string   // Single shared token (when Tokens is nil)
+	Tokens     []string // Multiple tokens for realistic mode
+	Realistic  bool     // Use unique token per viewer
 }
 
 // Metrics holds test metrics
@@ -145,22 +147,37 @@ type Viewer struct {
 	deviceID string
 }
 
+// Shared HTTP client for all viewers - avoids connection pool explosion
+var sharedClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        2000,
+		MaxIdleConnsPerHost: 2000,
+		MaxConnsPerHost:     0, // No limit
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 func NewViewer(id int, config Config, metrics *Metrics) *Viewer {
+	// Get token for this viewer
+	token := config.Token
+	if config.Realistic && len(config.Tokens) > 0 {
+		token = config.Tokens[id%len(config.Tokens)]
+	}
+
+	// Create viewer-specific config with the right token
+	viewerConfig := Config{
+		BaseURL:  config.BaseURL,
+		StreamID: config.StreamID,
+		Token:    token,
+	}
+
 	return &Viewer{
-		id:      id,
-		config:  config,
-		metrics: metrics,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 100,
-				IdleConnTimeout:     90 * time.Second,
-			},
-		},
-		// Use same device ID for all viewers to avoid "Another device watching" errors
-		// We're testing server performance, not device enforcement
-		deviceID: "loadtest-shared-device",
+		id:       id,
+		config:   viewerConfig,
+		metrics:  metrics,
+		client:   sharedClient,
+		deviceID: fmt.Sprintf("loadtest-device-%d", id), // Unique device per viewer in realistic mode
 	}
 }
 
@@ -632,20 +649,69 @@ func setupTestData(ctx context.Context, dbURL, redisURL, streamID string) (strin
 	return token, nil
 }
 
+// setupMultipleTokens creates multiple test payments and sessions
+func setupMultipleTokens(ctx context.Context, pgConnStr, redisConnStr, streamID string, count int) ([]string, error) {
+	db, err := sql.Open("postgres", pgConnStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+	defer db.Close()
+
+	opts, err := redis.ParseURL(redisConnStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse Redis URL: %w", err)
+	}
+	rdb := redis.NewClient(opts)
+	defer rdb.Close()
+
+	tokens := make([]string, count)
+	for i := 0; i < count; i++ {
+		token := generateToken()
+		tokens[i] = token
+
+		paymentID := generateUUID()
+		_, err = db.ExecContext(ctx, `
+			INSERT INTO payments (id, stream_id, email, amount_cents, status, access_token, token_expiry, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (access_token) DO UPDATE SET token_expiry = $7
+		`, paymentID, streamID, fmt.Sprintf("loadtest-%d@test.com", i), 0, "completed", token, time.Now().Add(24*time.Hour), time.Now())
+		if err != nil {
+			return nil, fmt.Errorf("failed to create test payment %d: %w", i, err)
+		}
+
+		sessionData := map[string]interface{}{
+			"token":      token,
+			"stream_id":  streamID,
+			"email":      fmt.Sprintf("loadtest-%d@test.com", i),
+			"payment_id": paymentID,
+			"expires_at": time.Now().Add(24 * time.Hour).Format(time.RFC3339),
+		}
+		sessionJSON, _ := json.Marshal(sessionData)
+		err = rdb.Set(ctx, "session:"+token, sessionJSON, 24*time.Hour).Err()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Redis session %d: %w", i, err)
+		}
+	}
+
+	return tokens, nil
+}
+
 // cleanupTestData removes test data
-func cleanupTestData(ctx context.Context, dbURL, redisURL, token string) {
-	// Clean PostgreSQL
-	db, err := sql.Open("postgres", dbURL)
+func cleanupTestData(ctx context.Context, pgConnStr, redisConnStr string, tokens []string) {
+	db, err := sql.Open("postgres", pgConnStr)
 	if err == nil {
-		db.ExecContext(ctx, "DELETE FROM payments WHERE access_token = $1", token)
+		for _, token := range tokens {
+			db.ExecContext(ctx, "DELETE FROM payments WHERE access_token = $1", token)
+		}
 		db.Close()
 	}
 
-	// Clean Redis
-	opts, _ := redis.ParseURL(redisURL)
+	opts, _ := redis.ParseURL(redisConnStr)
 	rdb := redis.NewClient(opts)
-	rdb.Del(ctx, "session:"+token)
-	rdb.Del(ctx, "device:"+token)
+	for _, token := range tokens {
+		rdb.Del(ctx, "session:"+token)
+		rdb.Del(ctx, "device:"+token)
+	}
 	rdb.Close()
 }
 
@@ -658,6 +724,7 @@ func main() {
 	duration := flag.Duration("duration", 30*time.Second, "Test duration per viewer count")
 	quick := flag.Bool("quick", false, "Quick test (10s per level)")
 	viewersFlag := flag.String("viewers", "10,100,1000", "Comma-separated viewer counts to test")
+	realistic := flag.Bool("realistic", false, "Use unique token per viewer (simulates real production load)")
 
 	flag.Parse()
 
@@ -722,26 +789,53 @@ func main() {
 	fmt.Printf("Stream: %s (%s)\n", streamTitle, streamID)
 	fmt.Printf("Duration per test: %v\n", *duration)
 	fmt.Printf("Viewer counts: %v\n", viewerCounts)
+	if *realistic {
+		fmt.Printf("Mode: 🎯 REALISTIC (unique token per viewer)\n")
+	} else {
+		fmt.Printf("Mode: 🔗 SHARED (single token for all viewers)\n")
+	}
+
+	// Determine max viewers needed
+	maxViewers := 0
+	for _, v := range viewerCounts {
+		if v > maxViewers {
+			maxViewers = v
+		}
+	}
 
 	// Setup test data
 	fmt.Println("\n⚙️  Setting up test data...")
-	token, err := setupTestData(ctx, *dbURL, *redisURL, streamID)
-	if err != nil {
-		fmt.Printf("❌ Failed to setup test data: %v\n", err)
-		os.Exit(1)
+	var tokens []string
+	if *realistic {
+		fmt.Printf("   Creating %d unique tokens...\n", maxViewers)
+		tokens, err = setupMultipleTokens(ctx, *dbURL, *redisURL, streamID, maxViewers)
+		if err != nil {
+			fmt.Printf("❌ Failed to setup test data: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("   ✓ Created %d test tokens\n", len(tokens))
+	} else {
+		token, err := setupTestData(ctx, *dbURL, *redisURL, streamID)
+		if err != nil {
+			fmt.Printf("❌ Failed to setup test data: %v\n", err)
+			os.Exit(1)
+		}
+		tokens = []string{token}
+		fmt.Printf("   ✓ Created test token: %s...\n", token[:16])
 	}
-	fmt.Printf("   ✓ Created test token: %s...\n", token[:16])
 
 	// Cleanup on exit
 	defer func() {
 		fmt.Println("\n🧹 Cleaning up test data...")
-		cleanupTestData(ctx, *dbURL, *redisURL, token)
+		cleanupTestData(ctx, *dbURL, *redisURL, tokens)
 	}()
 
 	config := Config{
-		BaseURL:  *baseURL,
-		StreamID: streamID,
-		Token:    token,
+		BaseURL:   *baseURL,
+		StreamID:  streamID,
+		Token:     tokens[0],
+		Tokens:    tokens,
+		Realistic: *realistic,
 	}
 
 	var results []*TestResult
