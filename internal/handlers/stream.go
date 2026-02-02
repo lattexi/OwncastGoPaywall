@@ -234,10 +234,10 @@ func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, st
 			}
 			content := string(body)
 
-			// Cache for 2 seconds (HLS segments are typically 2-6 seconds)
+			// Cache for 4 seconds (HLS segments are typically 2-6 seconds)
 			h.playlistCache.Store(owncastURL, &playlistCacheEntry{
 				content:   content,
-				expiresAt: time.Now().Add(2 * time.Second),
+				expiresAt: time.Now().Add(4 * time.Second),
 			})
 
 			return content, nil
