@@ -52,6 +52,7 @@ type StreamHandler struct {
 	client         *http.Client
 	streamCache    sync.Map            // uuid.UUID -> *streamCacheEntry
 	playlistCache  sync.Map            // string (owncastURL) -> *playlistCacheEntry
+	rewrittenCache sync.Map            // string (streamID:token:hlsPath) -> *playlistCacheEntry
 	segmentCache   sync.Map            // string (owncastURL) -> *segmentCacheEntry
 	playlistFlight singleflight.Group  // deduplicates concurrent playlist fetches
 	segmentFlight  singleflight.Group  // deduplicates concurrent segment fetches
@@ -189,14 +190,30 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 
 // servePlaylist fetches and rewrites an HLS playlist
 func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, stream *models.Stream, owncastURL, token string, hlsPath string) {
+	streamID := stream.ID.String()
+
+	// Check rewritten playlist cache first (per-token cache)
+	// This avoids re-running the rewrite for the same user's repeated requests
+	rewrittenKey := streamID + ":" + token + ":" + hlsPath
+	if entry, ok := h.rewrittenCache.Load(rewrittenKey); ok {
+		e := entry.(*playlistCacheEntry)
+		if time.Now().Before(e.expiresAt) {
+			// Cache hit - serve directly
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Write([]byte(e.content))
+			return
+		}
+		h.rewrittenCache.Delete(rewrittenKey)
+	}
+
 	// Determine the base directory for this playlist (for relative URL resolution)
 	baseDir := ""
 	if idx := strings.LastIndex(hlsPath, "/"); idx > 0 {
 		baseDir = hlsPath[:idx+1] // Include trailing slash
 	}
 
-	// Try to get playlist from cache (reduces load on Owncast for concurrent viewers)
-	// Cache key is just the owncastURL since base playlist content is the same for all viewers
+	// Try to get original playlist from cache (reduces load on Owncast for concurrent viewers)
 	var originalPlaylist string
 	if entry, ok := h.playlistCache.Load(owncastURL); ok {
 		e := entry.(*playlistCacheEntry)
@@ -251,19 +268,23 @@ func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, st
 		originalPlaylist = result.(string)
 	}
 
-	// Rewrite playlist with signed URLs for this user's token
-	rewritten, err := h.rewritePlaylist(strings.NewReader(originalPlaylist), stream.ID.String(), token, baseDir)
+	// Rewrite playlist with token URLs
+	rewritten, err := h.rewritePlaylist(strings.NewReader(originalPlaylist), streamID, token, baseDir)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to rewrite playlist")
 		http.Error(w, "Failed to process stream", http.StatusInternalServerError)
 		return
 	}
 
+	// Cache the rewritten playlist for this token (reduces rewrite operations)
+	h.rewrittenCache.Store(rewrittenKey, &playlistCacheEntry{
+		content:   rewritten,
+		expiresAt: time.Now().Add(4 * time.Second),
+	})
+
 	// Set headers
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
 
 	w.Write([]byte(rewritten))
 }
