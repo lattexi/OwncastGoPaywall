@@ -146,8 +146,14 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract token from query params
-	token := r.URL.Query().Get("token")
+	// Extract token from cookie first (browser sends automatically), then query param as fallback
+	token := ""
+	if cookie, err := r.Cookie("access_token"); err == nil {
+		token = cookie.Value
+	}
+	if token == "" {
+		token = r.URL.Query().Get("token")
+	}
 	if token == "" {
 		http.Error(w, "Missing token", http.StatusUnauthorized)
 		return
@@ -188,6 +194,8 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 }
 
 // servePlaylist fetches and rewrites an HLS playlist
+// Since we use cookie-based auth, the rewritten playlist is the same for all users
+// and can be fully cached (no per-user token in URLs)
 func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, stream *models.Stream, owncastURL, token string, hlsPath string) {
 	// Determine the base directory for this playlist (for relative URL resolution)
 	baseDir := ""
@@ -195,82 +203,80 @@ func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, st
 		baseDir = hlsPath[:idx+1] // Include trailing slash
 	}
 
-	// Try to get playlist from cache (reduces load on Owncast for concurrent viewers)
-	// Cache key is just the owncastURL since base playlist content is the same for all viewers
-	var originalPlaylist string
-	if entry, ok := h.playlistCache.Load(owncastURL); ok {
+	// Cache key for the final rewritten playlist (same for all users now)
+	cacheKey := stream.ID.String() + ":" + hlsPath
+
+	// Try to get rewritten playlist from cache
+	if entry, ok := h.playlistCache.Load(cacheKey); ok {
 		e := entry.(*playlistCacheEntry)
 		if time.Now().Before(e.expiresAt) {
-			originalPlaylist = e.content
-		} else {
-			h.playlistCache.Delete(owncastURL)
-		}
-	}
-
-	// If not in cache, fetch from Owncast using singleflight to deduplicate concurrent requests
-	if originalPlaylist == "" {
-		result, err, _ := h.playlistFlight.Do(owncastURL, func() (interface{}, error) {
-			// Double-check cache (another goroutine might have populated it)
-			if entry, ok := h.playlistCache.Load(owncastURL); ok {
-				e := entry.(*playlistCacheEntry)
-				if time.Now().Before(e.expiresAt) {
-					return e.content, nil
-				}
-			}
-
-			resp, err := h.client.Get(owncastURL)
-			if err != nil {
-				return nil, err
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK {
-				return nil, fmt.Errorf("owncast returned status %d", resp.StatusCode)
-			}
-
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return nil, err
-			}
-			content := string(body)
-
-			// Cache for 2 seconds (HLS segments are typically 2-6 seconds)
-			h.playlistCache.Store(owncastURL, &playlistCacheEntry{
-				content:   content,
-				expiresAt: time.Now().Add(2 * time.Second),
-			})
-
-			return content, nil
-		})
-
-		if err != nil {
-			log.Error().Err(err).Str("url", owncastURL).Msg("Failed to fetch playlist")
-			http.Error(w, "Failed to fetch stream", http.StatusBadGateway)
+			// Cache hit - serve directly
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Write([]byte(e.content))
 			return
 		}
-		originalPlaylist = result.(string)
+		h.playlistCache.Delete(cacheKey)
 	}
 
-	// Rewrite playlist with signed URLs for this user's token
-	rewritten, err := h.rewritePlaylist(strings.NewReader(originalPlaylist), stream.ID.String(), token, baseDir)
+	// Cache miss - fetch and rewrite using singleflight to deduplicate concurrent requests
+	result, err, _ := h.playlistFlight.Do(cacheKey, func() (interface{}, error) {
+		// Double-check cache (another goroutine might have populated it)
+		if entry, ok := h.playlistCache.Load(cacheKey); ok {
+			e := entry.(*playlistCacheEntry)
+			if time.Now().Before(e.expiresAt) {
+				return e.content, nil
+			}
+		}
+
+		// Fetch from Owncast
+		resp, err := h.client.Get(owncastURL)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("owncast returned status %d", resp.StatusCode)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		// Rewrite playlist (no token in URLs - cookie handles auth)
+		rewritten, err := h.rewritePlaylist(strings.NewReader(string(body)), stream.ID.String(), baseDir)
+		if err != nil {
+			return nil, err
+		}
+
+		// Cache the rewritten playlist for 4 seconds (safe for live HLS with 2-6s segments)
+		h.playlistCache.Store(cacheKey, &playlistCacheEntry{
+			content:   rewritten,
+			expiresAt: time.Now().Add(4 * time.Second),
+		})
+
+		return rewritten, nil
+	})
+
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to rewrite playlist")
-		http.Error(w, "Failed to process stream", http.StatusInternalServerError)
+		log.Error().Err(err).Str("url", owncastURL).Msg("Failed to fetch playlist")
+		http.Error(w, "Failed to fetch stream", http.StatusBadGateway)
 		return
 	}
 
 	// Set headers
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
 
-	w.Write([]byte(rewritten))
+	w.Write([]byte(result.(string)))
 }
 
 // rewritePlaylist rewrites all URLs in an HLS playlist to point to our proxy
 // baseDir is the directory prefix for relative URLs (e.g., "0/" for variant playlists)
-func (h *StreamHandler) rewritePlaylist(body io.Reader, streamID, token, baseDir string) (string, error) {
+// No token in URLs - browser sends access_token cookie automatically
+func (h *StreamHandler) rewritePlaylist(body io.Reader, streamID, baseDir string) (string, error) {
 	var result strings.Builder
 	scanner := bufio.NewScanner(body)
 
@@ -281,19 +287,19 @@ func (h *StreamHandler) rewritePlaylist(body io.Reader, streamID, token, baseDir
 		if hlsURLRegex.MatchString(line) {
 			// Extract the filename/path
 			originalPath := line
-			
+
 			// Remove any existing query params
 			if idx := strings.Index(originalPath, "?"); idx != -1 {
 				originalPath = originalPath[:idx]
 			}
-			
+
 			// Handle relative paths - prepend the base directory
 			if !strings.HasPrefix(originalPath, "/") && !strings.HasPrefix(originalPath, "http") {
 				originalPath = baseDir + originalPath
 			}
-			
-			// Build the proxy URL with token (no signature needed - validated via Redis)
-			proxyPath := "/stream/" + streamID + "/hls/" + originalPath + "?token=" + token
+
+			// Build the proxy URL (no token - cookie handles auth)
+			proxyPath := "/stream/" + streamID + "/hls/" + originalPath
 
 			result.WriteString(proxyPath)
 		} else {
