@@ -150,28 +150,28 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 
 	// For playlist requests, validate session and device (server-side protection)
 	// This prevents cheaters from bypassing client-side JavaScript checks
+	// Uses Redis for fast validation instead of PostgreSQL
 	if isPlaylist {
-		// Validate token is still valid
-		payment, err := h.pgStore.GetPaymentByAccessToken(ctx, token)
-		if err != nil || payment == nil || !payment.IsTokenValid() {
+		// Check session in Redis (fast) - session is created on payment confirmation
+		session, err := h.redis.GetSession(ctx, token)
+		if err != nil || session == nil {
 			log.Warn().
 				Str("stream_id", streamID).
 				Str("path", hlsPath).
-				Msg("Invalid token on playlist request")
+				Msg("No session found on playlist request")
 			http.Error(w, "Session expired", http.StatusUnauthorized)
 			return
 		}
 
 		// Verify token is for this stream
-		if payment.StreamID != streamUUID {
+		if session.StreamID != streamID {
 			http.Error(w, "Token not valid for this stream", http.StatusForbidden)
 			return
 		}
 
-		// Check device validation if we have device info in Redis
+		// Check device has been active recently (within heartbeat timeout)
 		activeDevice, err := h.sessionManager.GetActiveDevice(ctx, token)
 		if err == nil && activeDevice != nil {
-			// Check if device has been active recently (within heartbeat timeout)
 			if time.Since(activeDevice.LastSeen) > h.cfg.HeartbeatTimeout {
 				log.Warn().
 					Str("stream_id", streamID).
