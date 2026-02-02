@@ -68,6 +68,8 @@ func main() {
 		NetworkName:   cfg.DockerNetwork,
 		OwncastImage:  cfg.OwncastImage,
 		RTMPPortStart: cfg.RTMPPortStart,
+		CPULimit:      cfg.OwncastCPULimit,
+		MemoryLimit:   cfg.OwncastMemoryLimit,
 	})
 	if err != nil {
 		log.Warn().Err(err).Msg("Docker manager not available - container management disabled")

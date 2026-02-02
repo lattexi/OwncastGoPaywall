@@ -40,12 +40,14 @@ type Config struct {
 	RecoveryRateLimitPerIP    int
 
 	// Docker / Owncast Container Management
-	DockerHost          string // Docker socket path (e.g., unix:///var/run/docker.sock)
-	DockerNetwork       string // Docker network for containers (e.g., "internal")
-	OwncastImage        string // Owncast Docker image
-	RTMPPortStart       int    // Starting port for RTMP (e.g., 19350)
-	RTMPPublicHost      string // Public hostname for RTMP URLs (shown in admin)
+	DockerHost           string // Docker socket path (e.g., unix:///var/run/docker.sock)
+	DockerNetwork        string // Docker network for containers (e.g., "internal")
+	OwncastImage         string // Owncast Docker image
+	RTMPPortStart        int    // Starting port for RTMP (e.g., 19350)
+	RTMPPublicHost       string // Public hostname for RTMP URLs (shown in admin)
 	OwncastAdminPassword string // Owncast admin password (default: "abc123")
+	OwncastCPULimit      int64  // CPU limit in cores (e.g., 4 = 4 cores)
+	OwncastMemoryLimit   int64  // Memory limit in MB (e.g., 4096 = 4GB)
 }
 
 // Load reads configuration from environment variables
@@ -84,6 +86,8 @@ func Load() (*Config, error) {
 		RTMPPortStart:        getEnvInt("RTMP_PORT_START", 19350),
 		RTMPPublicHost:       getEnv("RTMP_PUBLIC_HOST", "localhost"),
 		OwncastAdminPassword: getEnv("OWNCAST_ADMIN_PASSWORD", "abc123"),
+		OwncastCPULimit:      int64(getEnvInt("OWNCAST_CPU_LIMIT", 4)),      // 4 cores default
+		OwncastMemoryLimit:   int64(getEnvInt("OWNCAST_MEMORY_LIMIT", 4096)), // 4GB default
 	}
 
 	// Parse durations
@@ -153,6 +157,8 @@ func LoadWithDefaults() *Config {
 			RTMPPortStart:        getEnvInt("RTMP_PORT_START", 19350),
 			RTMPPublicHost:       getEnv("RTMP_PUBLIC_HOST", "localhost"),
 			OwncastAdminPassword: getEnv("OWNCAST_ADMIN_PASSWORD", "abc123"),
+			OwncastCPULimit:      4,
+			OwncastMemoryLimit:   4096,
 		}
 	}
 	return cfg

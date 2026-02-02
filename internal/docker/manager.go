@@ -34,6 +34,8 @@ type Manager struct {
 	networkName   string
 	owncastImage  string
 	rtmpPortStart int
+	cpuLimit      int64 // CPU limit in cores
+	memoryLimit   int64 // Memory limit in MB
 }
 
 // Config holds configuration for the Docker manager
@@ -42,6 +44,8 @@ type Config struct {
 	NetworkName   string // Docker network to join (e.g., "internal")
 	OwncastImage  string // Owncast image (e.g., owncast/owncast:latest)
 	RTMPPortStart int    // Starting port for RTMP (e.g., 19350)
+	CPULimit      int64  // CPU limit in cores (e.g., 4)
+	MemoryLimit   int64  // Memory limit in MB (e.g., 4096)
 }
 
 // NewManager creates a new Docker manager
@@ -68,11 +72,23 @@ func NewManager(cfg *Config) (*Manager, error) {
 		return nil, fmt.Errorf("failed to connect to Docker: %w", err)
 	}
 
+	// Set defaults if not specified
+	cpuLimit := cfg.CPULimit
+	if cpuLimit <= 0 {
+		cpuLimit = 4 // Default 4 cores
+	}
+	memoryLimit := cfg.MemoryLimit
+	if memoryLimit <= 0 {
+		memoryLimit = 4096 // Default 4GB
+	}
+
 	return &Manager{
 		client:        cli,
 		networkName:   cfg.NetworkName,
 		owncastImage:  cfg.OwncastImage,
 		rtmpPortStart: cfg.RTMPPortStart,
+		cpuLimit:      cpuLimit,
+		memoryLimit:   memoryLimit,
 	}, nil
 }
 
@@ -160,12 +176,12 @@ func (m *Manager) CreateAndStartContainer(ctx context.Context, slug, streamKey s
 			Name: container.RestartPolicyUnlessStopped,
 		},
 		Resources: container.Resources{
-			// Limit CPU to 2 cores (transcoding is CPU-intensive)
-			NanoCPUs: 2 * 1e9,
-			// Limit memory to 2GB (prevents OOM from runaway transcoding)
-			Memory: 2 * 1024 * 1024 * 1024,
+			// CPU limit (configurable via OWNCAST_CPU_LIMIT env var)
+			NanoCPUs: m.cpuLimit * 1e9,
+			// Memory limit (configurable via OWNCAST_MEMORY_LIMIT env var, in MB)
+			Memory: m.memoryLimit * 1024 * 1024,
 			// Memory swap same as memory (no swap)
-			MemorySwap: 2 * 1024 * 1024 * 1024,
+			MemorySwap: m.memoryLimit * 1024 * 1024,
 		},
 	}
 
