@@ -457,16 +457,24 @@ func (h *StreamHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// Validate token
-	payment, err := h.pgStore.GetPaymentByAccessToken(ctx, token)
-	if err != nil || payment == nil || !payment.IsTokenValid() {
+	// Validate token using Redis session (fast) instead of PostgreSQL
+	// Session is created when payment is confirmed, so if it exists, the token is valid
+	session, err := h.redis.GetSession(ctx, token)
+	if err != nil || session == nil {
 		writeJSONError(w, http.StatusUnauthorized, "Invalid or expired token")
 		return
 	}
 
 	// Verify stream ID matches
-	if streamID != payment.StreamID.String() {
+	if streamID != session.StreamID {
 		writeJSONError(w, http.StatusForbidden, "Token not valid for this stream")
+		return
+	}
+
+	// Parse stream UUID for active session tracking
+	streamUUID, err := uuid.Parse(session.StreamID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Invalid stream ID in session")
 		return
 	}
 
@@ -501,7 +509,7 @@ func (h *StreamHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	h.redis.RefreshSession(ctx, token, h.cfg.SessionDuration)
 
 	// Track active session for viewer count (TTL slightly longer than heartbeat interval)
-	h.redis.TrackActiveSession(ctx, payment.StreamID, token, 45*time.Second)
+	h.redis.TrackActiveSession(ctx, streamUUID, token, 45*time.Second)
 
 	// Generate fresh signed playlist URL for the client
 	playlistPath := "/stream/" + streamID + "/hls/stream.m3u8"
