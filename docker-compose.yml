@@ -21,8 +21,10 @@ services:
       - REDIS_URL=redis://redis:6379
       - SESSION_DURATION=${SESSION_DURATION:-24h}
       - HEARTBEAT_TIMEOUT=${HEARTBEAT_TIMEOUT:-45s}
-      - SIGNATURE_VALIDITY=${SIGNATURE_VALIDITY:-30s}
+      - SIGNATURE_VALIDITY=${SIGNATURE_VALIDITY:-24h}
       # Docker management configuration
+      - OWNCAST_CPU_LIMIT=${OWNCAST_CPU_LIMIT:-4}
+      - OWNCAST_MEMORY_LIMIT=${OWNCAST_MEMORY_LIMIT:-4096}
       - DOCKER_HOST=unix:///var/run/docker.sock
       - DOCKER_NETWORK=owncastgopaywall_internal
       - OWNCAST_IMAGE=${OWNCAST_IMAGE:-owncast/owncast:latest}
@@ -40,7 +42,15 @@ services:
       - public
       - internal
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:3000/health",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -89,7 +99,7 @@ networks:
   # Public network - for services that need external access
   public:
     driver: bridge
-  
+
   # Internal network - for internal services and dynamic Owncast containers
   # Note: Dynamic Owncast containers join this network for HLS proxying
   # but expose RTMP ports directly on the host for OBS connections

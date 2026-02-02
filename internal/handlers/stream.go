@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"regexp"
@@ -34,6 +35,13 @@ type playlistCacheEntry struct {
 	expiresAt time.Time
 }
 
+// segmentCacheEntry holds cached HLS segment data
+type segmentCacheEntry struct {
+	data        []byte
+	contentType string
+	expiresAt   time.Time
+}
+
 // StreamHandler handles stream-related endpoints
 type StreamHandler struct {
 	cfg            *config.Config
@@ -44,6 +52,7 @@ type StreamHandler struct {
 	client         *http.Client
 	streamCache    sync.Map // uuid.UUID -> *streamCacheEntry
 	playlistCache  sync.Map // string (owncastURL) -> *playlistCacheEntry
+	segmentCache   sync.Map // string (owncastURL) -> *segmentCacheEntry
 }
 
 // NewStreamHandler creates a new stream handler
@@ -312,9 +321,24 @@ func (h *StreamHandler) rewritePlaylist(body io.Reader, streamID, token, baseDir
 	return result.String(), nil
 }
 
-// serveSegment proxies a video segment from Owncast
+// serveSegment proxies a video segment from Owncast with server-side caching
 func (h *StreamHandler) serveSegment(w http.ResponseWriter, r *http.Request, owncastURL string) {
-	// Fetch segment from Owncast
+	// Try to get segment from cache (reduces load on Owncast for concurrent viewers)
+	if entry, ok := h.segmentCache.Load(owncastURL); ok {
+		e := entry.(*segmentCacheEntry)
+		if time.Now().Before(e.expiresAt) {
+			// Cache hit - serve from memory
+			w.Header().Set("Content-Type", e.contentType)
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(e.data)))
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+			w.Write(e.data)
+			return
+		}
+		// Expired, delete it
+		h.segmentCache.Delete(owncastURL)
+	}
+
+	// Cache miss - fetch from Owncast
 	resp, err := h.client.Get(owncastURL)
 	if err != nil {
 		log.Error().Err(err).Str("url", owncastURL).Msg("Failed to fetch segment")
@@ -322,29 +346,41 @@ func (h *StreamHandler) serveSegment(w http.ResponseWriter, r *http.Request, own
 		return
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		http.Error(w, "Segment not available", resp.StatusCode)
 		return
 	}
-	
-	// Copy relevant headers
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	} else {
-		// Default for TS segments
-		w.Header().Set("Content-Type", "video/mp2t")
+
+	// Read the segment into memory for caching
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to read segment")
+		http.Error(w, "Failed to fetch segment", http.StatusBadGateway)
+		return
 	}
-	
-	if cl := resp.Header.Get("Content-Length"); cl != "" {
-		w.Header().Set("Content-Length", cl)
+
+	// Determine content type
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "video/mp2t" // Default for TS segments
 	}
-	
-	// Allow caching of segments (they're immutable)
+
+	// Cache the segment for 30 seconds (enough for all viewers to fetch it)
+	// Only cache segments under 5MB to prevent memory issues
+	if len(data) < 5*1024*1024 {
+		h.segmentCache.Store(owncastURL, &segmentCacheEntry{
+			data:        data,
+			contentType: contentType,
+			expiresAt:   time.Now().Add(30 * time.Second),
+		})
+	}
+
+	// Serve the segment
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
 	w.Header().Set("Cache-Control", "public, max-age=86400")
-	
-	// Stream the content
-	io.Copy(w, resp.Body)
+	w.Write(data)
 }
 
 // GetStreamInfo returns public stream information
