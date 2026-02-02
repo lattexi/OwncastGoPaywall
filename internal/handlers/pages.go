@@ -1,13 +1,13 @@
 package handlers
 
 import (
+	"fmt"
 	"html/template"
 	"net/http"
 	"time"
 
 	"github.com/laurikarhu/stream-paywall/internal/config"
 	"github.com/laurikarhu/stream-paywall/internal/models"
-	"github.com/laurikarhu/stream-paywall/internal/security"
 	"github.com/laurikarhu/stream-paywall/internal/storage"
 	"github.com/rs/zerolog/log"
 )
@@ -19,7 +19,6 @@ type PageHandler struct {
 	redis       *storage.RedisStore
 	templates   *template.Template
 	templateDir string
-	urlSigner   *security.URLSigner
 }
 
 // NewPageHandler creates a new page handler
@@ -37,7 +36,6 @@ func NewPageHandler(cfg *config.Config, pgStore *storage.PostgresStore, redis *s
 		redis:       redis,
 		templates:   templates,
 		templateDir: templateDir,
-		urlSigner:   security.NewURLSigner(cfg.SigningSecret, cfg.SignatureValidity),
 	}, nil
 }
 
@@ -208,9 +206,8 @@ func (h *PageHandler) Watch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate signed playlist URL
-	playlistPath := "/stream/" + stream.ID.String() + "/hls/stream.m3u8"
-	playlistURL := h.cfg.BaseURL + h.urlSigner.SignURL(stream.ID.String(), token, playlistPath)
+	// Generate playlist URL (token validated via Redis, no signature needed)
+	playlistURL := fmt.Sprintf("%s/stream/%s/hls/stream.m3u8?token=%s", h.cfg.BaseURL, stream.ID.String(), token)
 
 	data := WatchData{
 		BaseData: BaseData{

@@ -48,7 +48,6 @@ type StreamHandler struct {
 	cfg            *config.Config
 	pgStore        *storage.PostgresStore
 	redis          *storage.RedisStore
-	urlSigner      *security.URLSigner
 	sessionManager *security.SessionManager
 	client         *http.Client
 	streamCache    sync.Map            // uuid.UUID -> *streamCacheEntry
@@ -64,7 +63,6 @@ func NewStreamHandler(cfg *config.Config, pgStore *storage.PostgresStore, redis 
 		cfg:            cfg,
 		pgStore:        pgStore,
 		redis:          redis,
-		urlSigner:      security.NewURLSigner(cfg.SigningSecret, cfg.SignatureValidity),
 		sessionManager: security.NewSessionManager(redis, cfg.SessionDuration, cfg.HeartbeatTimeout),
 		client: &http.Client{
 			Transport: &http.Transport{
@@ -148,33 +146,20 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the signed URL
-	// The signature validates: streamID + token + path + expiry
-	// If signature is valid, the token was valid when the URL was signed
-	err = h.urlSigner.VerifyURLFromRequest(streamID, "/stream/"+streamID+"/hls/"+hlsPath, r.URL.Query())
-	if err != nil {
-		log.Warn().
-			Err(err).
-			Str("stream_id", streamID).
-			Str("path", hlsPath).
-			Msg("Invalid signature")
-		http.Error(w, "Invalid or expired signature", http.StatusForbidden)
+	// Extract token from query params
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "Missing token", http.StatusUnauthorized)
 		return
 	}
-
-	// Extract token for playlist URL signing (already validated by signature above)
-	token := r.URL.Query().Get("token")
 
 	// Determine content type based on file extension
 	isPlaylist := strings.HasSuffix(hlsPath, ".m3u8")
 
-	// For playlist requests, validate session (server-side protection)
-	// This prevents cheaters from bypassing client-side JavaScript checks
-	// Uses Redis for fast validation instead of PostgreSQL
-	// Note: Device validation is handled by the heartbeat, not here - the first playlist
-	// request happens BEFORE the first heartbeat, so we can't require a recent heartbeat.
+	// For playlist requests, validate session in Redis (fast, real-time validation)
+	// Segments don't need validation - they're useless without a valid playlist,
+	// and the playlist request already validated the session.
 	if isPlaylist {
-		// Check session in Redis (fast) - session is created on payment confirmation
 		session, err := h.redis.GetSession(ctx, token)
 		if err != nil || session == nil {
 			log.Warn().
@@ -307,11 +292,10 @@ func (h *StreamHandler) rewritePlaylist(body io.Reader, streamID, token, baseDir
 				originalPath = baseDir + originalPath
 			}
 			
-			// Build the proxy URL with signature
-			proxyPath := "/stream/" + streamID + "/hls/" + originalPath
-			signedURL := h.urlSigner.SignURL(streamID, token, proxyPath)
-			
-			result.WriteString(signedURL)
+			// Build the proxy URL with token (no signature needed - validated via Redis)
+			proxyPath := "/stream/" + streamID + "/hls/" + originalPath + "?token=" + token
+
+			result.WriteString(proxyPath)
 		} else {
 			result.WriteString(line)
 		}
@@ -533,14 +517,13 @@ func (h *StreamHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	// Track active session for viewer count (TTL slightly longer than heartbeat interval)
 	h.redis.TrackActiveSession(ctx, streamUUID, token, 45*time.Second)
 
-	// Generate fresh signed playlist URL for the client
-	playlistPath := "/stream/" + streamID + "/hls/stream.m3u8"
-	signedURL := h.cfg.BaseURL + h.urlSigner.SignURL(streamID, token, playlistPath)
+	// Generate playlist URL for the client (token validated via Redis, no signature needed)
+	playlistURL := fmt.Sprintf("%s/stream/%s/hls/stream.m3u8?token=%s", h.cfg.BaseURL, streamID, token)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success":      true,
 		"message":      "Heartbeat received",
-		"playlist_url": signedURL,
+		"playlist_url": playlistURL,
 	})
 }
 
@@ -581,18 +564,16 @@ func (h *StreamHandler) GetPlaylistURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// Generate signed playlist URL
-	playlistPath := "/stream/" + stream.ID.String() + "/hls/stream.m3u8"
-	signedURL := h.cfg.BaseURL + h.urlSigner.SignURL(stream.ID.String(), token, playlistPath)
-	
+	// Generate playlist URL (token validated via Redis, no signature needed)
+	playlistURL := fmt.Sprintf("%s/stream/%s/hls/stream.m3u8?token=%s", h.cfg.BaseURL, stream.ID.String(), token)
+
 	writeJSON(w, http.StatusOK, map[string]string{
-		"playlist_url": signedURL,
+		"playlist_url": playlistURL,
 	})
 }
 
-// BuildSignedPlaylistURL is a helper that builds a signed playlist URL
+// BuildPlaylistURL builds a playlist URL with token
 // Used by page handlers to embed the URL in templates
-func (h *StreamHandler) BuildSignedPlaylistURL(streamID uuid.UUID, token string) string {
-	playlistPath := "/stream/" + streamID.String() + "/hls/stream.m3u8"
-	return h.cfg.BaseURL + h.urlSigner.SignURL(streamID.String(), token, playlistPath)
+func (h *StreamHandler) BuildPlaylistURL(streamID uuid.UUID, token string) string {
+	return fmt.Sprintf("%s/stream/%s/hls/stream.m3u8?token=%s", h.cfg.BaseURL, streamID.String(), token)
 }

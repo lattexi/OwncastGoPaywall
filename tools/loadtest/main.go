@@ -3,9 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -27,11 +25,9 @@ import (
 
 // Config holds test configuration
 type Config struct {
-	BaseURL          string
-	StreamID         string
-	Token            string
-	SigningSecret    string
-	SignatureValidity time.Duration
+	BaseURL  string
+	StreamID string
+	Token    string
 }
 
 // Metrics holds test metrics
@@ -140,34 +136,12 @@ func calculateStats(latencies []time.Duration) Stats {
 	}
 }
 
-// URLSigner handles URL signing (same logic as server)
-type URLSigner struct {
-	secret   string
-	validity time.Duration
-}
-
-func NewURLSigner(secret string, validity time.Duration) *URLSigner {
-	return &URLSigner{secret: secret, validity: validity}
-}
-
-func (s *URLSigner) SignURL(streamID, token, path string) string {
-	expires := time.Now().Add(s.validity).Unix()
-	data := fmt.Sprintf("%s:%s:%s:%d", streamID, token, path, expires)
-
-	h := hmac.New(sha256.New, []byte(s.secret))
-	h.Write([]byte(data))
-	sig := hex.EncodeToString(h.Sum(nil))
-
-	return fmt.Sprintf("%s?expires=%d&sig=%s&token=%s", path, expires, sig, token)
-}
-
 // Viewer simulates a single HLS viewer
 type Viewer struct {
 	id       int
 	config   Config
 	client   *http.Client
 	metrics  *Metrics
-	signer   *URLSigner
 	deviceID string
 }
 
@@ -176,7 +150,6 @@ func NewViewer(id int, config Config, metrics *Metrics) *Viewer {
 		id:      id,
 		config:  config,
 		metrics: metrics,
-		signer:  NewURLSigner(config.SigningSecret, config.SignatureValidity),
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
@@ -222,10 +195,8 @@ func (v *Viewer) Run(ctx context.Context, wg *sync.WaitGroup) {
 }
 
 func (v *Viewer) fetchPlaylistAndSegments(ctx context.Context) {
-	// Generate fresh signed URL for master playlist
-	path := fmt.Sprintf("/stream/%s/hls/stream.m3u8", v.config.StreamID)
-	signedPath := v.signer.SignURL(v.config.StreamID, v.config.Token, path)
-	playlistURL := v.config.BaseURL + signedPath
+	// Generate playlist URL with token (no signing needed - validated via Redis)
+	playlistURL := fmt.Sprintf("%s/stream/%s/hls/stream.m3u8?token=%s", v.config.BaseURL, v.config.StreamID, v.config.Token)
 
 	start := time.Now()
 	resp, err := v.client.Get(playlistURL)
@@ -683,7 +654,6 @@ func main() {
 	baseURL := flag.String("url", "http://lauri.duckdns.org:3000", "Base URL of the paywall server")
 	dbURL := flag.String("db", "", "PostgreSQL connection string (default: from DATABASE_URL env)")
 	redisURL := flag.String("redis", "", "Redis connection string (default: from REDIS_URL env)")
-	signingSecret := flag.String("secret", "", "Signing secret (default: from SIGNING_SECRET env)")
 	streamSlug := flag.String("stream", "", "Stream slug to test (will find first live stream if not specified)")
 	duration := flag.Duration("duration", 30*time.Second, "Test duration per viewer count")
 	quick := flag.Bool("quick", false, "Quick test (10s per level)")
@@ -702,13 +672,6 @@ func main() {
 		*redisURL = os.Getenv("REDIS_URL")
 		if *redisURL == "" {
 			*redisURL = "redis://localhost:6379"
-		}
-	}
-	if *signingSecret == "" {
-		*signingSecret = os.Getenv("SIGNING_SECRET")
-		if *signingSecret == "" {
-			fmt.Println("❌ SIGNING_SECRET is required. Set via -secret flag or SIGNING_SECRET env var")
-			os.Exit(1)
 		}
 	}
 
@@ -776,11 +739,9 @@ func main() {
 	}()
 
 	config := Config{
-		BaseURL:           *baseURL,
-		StreamID:          streamID,
-		Token:             token,
-		SigningSecret:     *signingSecret,
-		SignatureValidity: 24 * time.Hour,
+		BaseURL:  *baseURL,
+		StreamID: streamID,
+		Token:    token,
 	}
 
 	var results []*TestResult
