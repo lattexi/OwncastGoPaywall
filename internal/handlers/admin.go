@@ -347,36 +347,35 @@ func (h *AdminHandler) ListPayments(w http.ResponseWriter, r *http.Request) {
 func (h *AdminHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// Get stream count
 	streams, err := h.pgStore.ListStreams(ctx)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "Failed to get stats")
 		return
 	}
 
-	var totalPayments, completedPayments, totalRevenue int
+	// Get aggregated payment stats in ONE query (fixes N+1 problem)
+	paymentStats, err := h.pgStore.GetPaymentStatsAggregate(ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to get payment stats")
+		writeJSONError(w, http.StatusInternalServerError, "Failed to get stats")
+		return
+	}
+
+	// Count active viewers across all streams
 	var activeViewers int64 = 0
-
 	for _, stream := range streams {
-		payments, _ := h.pgStore.ListPaymentsByStream(ctx, stream.ID)
-		for _, p := range payments {
-			totalPayments++
-			if p.Status == models.PaymentStatusCompleted {
-				completedPayments++
-				totalRevenue += p.AmountCents
-			}
-		}
-
 		count, _ := h.redis.CountActiveSessions(ctx, stream.ID)
 		activeViewers += count
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"total_streams":      len(streams),
-		"total_payments":     totalPayments,
-		"completed_payments": completedPayments,
-		"total_revenue_cents": totalRevenue,
-		"total_revenue_euros": float64(totalRevenue) / 100,
-		"active_viewers":     activeViewers,
+		"total_streams":       len(streams),
+		"total_payments":      paymentStats.TotalPayments,
+		"completed_payments":  paymentStats.CompletedPayments,
+		"total_revenue_cents": paymentStats.TotalRevenueCents,
+		"total_revenue_euros": float64(paymentStats.TotalRevenueCents) / 100,
+		"active_viewers":      activeViewers,
 	})
 }
 

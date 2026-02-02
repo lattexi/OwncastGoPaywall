@@ -28,6 +28,12 @@ type streamCacheEntry struct {
 	expiresAt time.Time
 }
 
+// playlistCacheEntry holds cached HLS playlist data with short TTL
+type playlistCacheEntry struct {
+	content   string
+	expiresAt time.Time
+}
+
 // StreamHandler handles stream-related endpoints
 type StreamHandler struct {
 	cfg            *config.Config
@@ -37,6 +43,7 @@ type StreamHandler struct {
 	sessionManager *security.SessionManager
 	client         *http.Client
 	streamCache    sync.Map // uuid.UUID -> *streamCacheEntry
+	playlistCache  sync.Map // string (owncastURL) -> *playlistCacheEntry
 }
 
 // NewStreamHandler creates a new stream handler
@@ -196,41 +203,70 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 
 // servePlaylist fetches and rewrites an HLS playlist
 func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, stream *models.Stream, owncastURL, token string, hlsPath string) {
-	// Fetch original playlist from Owncast
-	resp, err := h.client.Get(owncastURL)
-	if err != nil {
-		log.Error().Err(err).Str("url", owncastURL).Msg("Failed to fetch playlist")
-		http.Error(w, "Failed to fetch stream", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	
-	if resp.StatusCode != http.StatusOK {
-		log.Warn().Int("status", resp.StatusCode).Str("url", owncastURL).Msg("Owncast returned non-200")
-		http.Error(w, "Stream not available", resp.StatusCode)
-		return
-	}
-	
 	// Determine the base directory for this playlist (for relative URL resolution)
 	baseDir := ""
 	if idx := strings.LastIndex(hlsPath, "/"); idx > 0 {
 		baseDir = hlsPath[:idx+1] // Include trailing slash
 	}
-	
-	// Read and rewrite playlist
-	rewritten, err := h.rewritePlaylist(resp.Body, stream.ID.String(), token, baseDir)
+
+	// Try to get playlist from cache (reduces load on Owncast for concurrent viewers)
+	// Cache key is just the owncastURL since base playlist content is the same for all viewers
+	var originalPlaylist string
+	if entry, ok := h.playlistCache.Load(owncastURL); ok {
+		e := entry.(*playlistCacheEntry)
+		if time.Now().Before(e.expiresAt) {
+			originalPlaylist = e.content
+		} else {
+			h.playlistCache.Delete(owncastURL)
+		}
+	}
+
+	// If not in cache, fetch from Owncast
+	if originalPlaylist == "" {
+		resp, err := h.client.Get(owncastURL)
+		if err != nil {
+			log.Error().Err(err).Str("url", owncastURL).Msg("Failed to fetch playlist")
+			http.Error(w, "Failed to fetch stream", http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			log.Warn().Int("status", resp.StatusCode).Str("url", owncastURL).Msg("Owncast returned non-200")
+			http.Error(w, "Stream not available", resp.StatusCode)
+			return
+		}
+
+		// Read playlist content
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to read playlist")
+			http.Error(w, "Failed to fetch stream", http.StatusBadGateway)
+			return
+		}
+		originalPlaylist = string(body)
+
+		// Cache for 1 second (HLS segments are typically 2-6 seconds)
+		h.playlistCache.Store(owncastURL, &playlistCacheEntry{
+			content:   originalPlaylist,
+			expiresAt: time.Now().Add(1 * time.Second),
+		})
+	}
+
+	// Rewrite playlist with signed URLs for this user's token
+	rewritten, err := h.rewritePlaylist(strings.NewReader(originalPlaylist), stream.ID.String(), token, baseDir)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to rewrite playlist")
 		http.Error(w, "Failed to process stream", http.StatusInternalServerError)
 		return
 	}
-	
+
 	// Set headers
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
-	
+
 	w.Write([]byte(rewritten))
 }
 

@@ -171,45 +171,41 @@ func (h *AdminPageHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	session := middleware.GetAdminSession(ctx)
 
-	// Get stats
+	// Get streams (needed for live streams list and viewer count)
 	streams, _ := h.pgStore.ListStreams(ctx)
-	
-	var totalPayments, completedPayments int
-	var totalRevenue int
-	var activeViewers int64 = 0
+
+	// Get aggregated payment stats in ONE query (fixes N+1 problem)
+	paymentStats, err := h.pgStore.GetPaymentStatsAggregate(ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to get payment stats")
+		paymentStats = &storage.PaymentStats{}
+	}
+
+	// Get recent payments with stream titles in ONE query (fixes N+1 problem)
+	recentPaymentsList, streamTitles, err := h.pgStore.GetRecentCompletedPayments(ctx, 10)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to get recent payments")
+	}
+
+	// Build recent payments with stream info
 	var recentPayments []PaymentWithStream
+	for _, p := range recentPaymentsList {
+		recentPayments = append(recentPayments, PaymentWithStream{
+			Payment:     p,
+			StreamTitle: streamTitles[p.StreamID],
+			AmountEuros: float64(p.AmountCents) / 100,
+		})
+	}
 
-	// Create stream title map
-	streamTitles := make(map[uuid.UUID]string)
+	// Get live streams and active viewers
 	var liveStreams []*models.Stream
-
+	var activeViewers int64 = 0
 	for _, stream := range streams {
-		streamTitles[stream.ID] = stream.Title
-		
 		if stream.Status == models.StreamStatusLive {
 			liveStreams = append(liveStreams, stream)
 		}
-
 		count, _ := h.redis.CountActiveSessions(ctx, stream.ID)
 		activeViewers += count
-
-		payments, _ := h.pgStore.ListPaymentsByStream(ctx, stream.ID)
-		for _, p := range payments {
-			totalPayments++
-			if p.Status == models.PaymentStatusCompleted {
-				completedPayments++
-				totalRevenue += p.AmountCents
-
-				// Collect recent payments
-				if len(recentPayments) < 10 {
-					recentPayments = append(recentPayments, PaymentWithStream{
-						Payment:     p,
-						StreamTitle: streamTitles[p.StreamID],
-						AmountEuros: float64(p.AmountCents) / 100,
-					})
-				}
-			}
-		}
 	}
 
 	data := struct {
@@ -228,8 +224,8 @@ func (h *AdminPageHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		Stats: DashboardStats{
 			TotalStreams:      len(streams),
 			ActiveViewers:     activeViewers,
-			TotalRevenueEuros: float64(totalRevenue) / 100,
-			CompletedPayments: completedPayments,
+			TotalRevenueEuros: float64(paymentStats.TotalRevenueCents) / 100,
+			CompletedPayments: paymentStats.CompletedPayments,
 		},
 		LiveStreams:    liveStreams,
 		RecentPayments: recentPayments,

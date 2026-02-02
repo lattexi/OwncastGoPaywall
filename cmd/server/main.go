@@ -113,10 +113,15 @@ func main() {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Static files
+	// Static files with cache headers
 	staticDir := findStaticDir()
 	fs := http.FileServer(http.Dir(staticDir))
-	mux.Handle("GET /static/", http.StripPrefix("/static/", fs))
+	cachedFS := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Cache static assets for 1 week (CSS, JS, images are versioned or rarely change)
+		w.Header().Set("Cache-Control", "public, max-age=604800, immutable")
+		http.StripPrefix("/static/", fs).ServeHTTP(w, r)
+	})
+	mux.Handle("GET /static/", cachedFS)
 
 	// Public API endpoints
 	mux.HandleFunc("GET /api/streams", streamHandler.ListStreams)

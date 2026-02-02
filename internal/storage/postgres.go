@@ -619,3 +619,89 @@ func (s *PostgresStore) GetWhitelistEntry(ctx context.Context, streamID uuid.UUI
 	}
 	return entry, nil
 }
+
+// PaymentStats holds aggregated payment statistics
+type PaymentStats struct {
+	TotalPayments     int
+	CompletedPayments int
+	TotalRevenueCents int
+}
+
+// GetPaymentStatsAggregate returns aggregated payment stats in a single query
+// This avoids the N+1 query problem of fetching payments per stream
+func (s *PostgresStore) GetPaymentStatsAggregate(ctx context.Context) (*PaymentStats, error) {
+	query := `
+		SELECT
+			COUNT(*) as total_payments,
+			COUNT(*) FILTER (WHERE status = 'completed') as completed_payments,
+			COALESCE(SUM(amount_cents) FILTER (WHERE status = 'completed'), 0) as total_revenue
+		FROM payments
+	`
+	stats := &PaymentStats{}
+	err := s.pool.QueryRow(ctx, query).Scan(
+		&stats.TotalPayments,
+		&stats.CompletedPayments,
+		&stats.TotalRevenueCents,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
+// GetRecentCompletedPayments returns the most recent completed payments with stream titles
+// Uses a single query with JOIN instead of N+1 queries
+func (s *PostgresStore) GetRecentCompletedPayments(ctx context.Context, limit int) ([]*models.Payment, map[uuid.UUID]string, error) {
+	query := `
+		SELECT p.id, p.stream_id, p.email, p.amount_cents, p.status,
+		       p.paytrail_ref, p.paytrail_transaction_id, p.access_token,
+		       p.token_expiry, p.created_at, s.title
+		FROM payments p
+		JOIN streams s ON p.stream_id = s.id
+		WHERE p.status = 'completed'
+		ORDER BY p.created_at DESC
+		LIMIT $1
+	`
+	rows, err := s.pool.Query(ctx, query, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	var payments []*models.Payment
+	streamTitles := make(map[uuid.UUID]string)
+
+	for rows.Next() {
+		p := &models.Payment{}
+		var streamTitle string
+		var paytrailRef, paytrailTxID, accessToken *string
+		var tokenExpiry *time.Time
+
+		err := rows.Scan(
+			&p.ID, &p.StreamID, &p.Email, &p.AmountCents, &p.Status,
+			&paytrailRef, &paytrailTxID, &accessToken,
+			&tokenExpiry, &p.CreatedAt, &streamTitle,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if paytrailRef != nil {
+			p.PaytrailRef = *paytrailRef
+		}
+		if paytrailTxID != nil {
+			p.PaytrailTransactionID = *paytrailTxID
+		}
+		if accessToken != nil {
+			p.AccessToken = *accessToken
+		}
+		if tokenExpiry != nil {
+			p.TokenExpiry = tokenExpiry
+		}
+
+		payments = append(payments, p)
+		streamTitles[p.StreamID] = streamTitle
+	}
+
+	return payments, streamTitles, nil
+}

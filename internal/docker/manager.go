@@ -138,7 +138,7 @@ func (m *Manager) CreateAndStartContainer(ctx context.Context, slug, streamKey s
 		},
 	}
 
-	// Host config with port bindings and volume mount
+	// Host config with port bindings, volume mount, and resource limits
 	hostConfig := &container.HostConfig{
 		PortBindings: nat.PortMap{
 			"1935/tcp": []nat.PortBinding{
@@ -158,6 +158,14 @@ func (m *Manager) CreateAndStartContainer(ctx context.Context, slug, streamKey s
 		},
 		RestartPolicy: container.RestartPolicy{
 			Name: container.RestartPolicyUnlessStopped,
+		},
+		Resources: container.Resources{
+			// Limit CPU to 2 cores (transcoding is CPU-intensive)
+			NanoCPUs: 2 * 1e9,
+			// Limit memory to 2GB (prevents OOM from runaway transcoding)
+			Memory: 2 * 1024 * 1024 * 1024,
+			// Memory swap same as memory (no swap)
+			MemorySwap: 2 * 1024 * 1024 * 1024,
 		},
 	}
 
