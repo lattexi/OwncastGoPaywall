@@ -195,14 +195,11 @@ func (v *Viewer) Run(ctx context.Context, wg *sync.WaitGroup) {
 }
 
 func (v *Viewer) fetchPlaylistAndSegments(ctx context.Context) {
-	// Generate playlist URL (token sent via cookie)
-	playlistURL := fmt.Sprintf("%s/stream/%s/hls/stream.m3u8", v.config.BaseURL, v.config.StreamID)
-
-	req, _ := http.NewRequestWithContext(ctx, "GET", playlistURL, nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: v.config.Token})
+	// Generate playlist URL with token (no signing needed - validated via Redis)
+	playlistURL := fmt.Sprintf("%s/stream/%s/hls/stream.m3u8?token=%s", v.config.BaseURL, v.config.StreamID, v.config.Token)
 
 	start := time.Now()
-	resp, err := v.client.Do(req)
+	resp, err := v.client.Get(playlistURL)
 	latency := time.Since(start)
 
 	if err != nil {
@@ -253,10 +250,7 @@ func (v *Viewer) fetchPlaylistAndSegments(ctx context.Context) {
 func (v *Viewer) fetchVariantPlaylist(ctx context.Context, variantPath string) string {
 	variantURL := v.config.BaseURL + variantPath
 
-	req, _ := http.NewRequestWithContext(ctx, "GET", variantURL, nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: v.config.Token})
-
-	resp, err := v.client.Do(req)
+	resp, err := v.client.Get(variantURL)
 	if err != nil {
 		return ""
 	}
@@ -281,13 +275,11 @@ func (v *Viewer) fetchVariantPlaylist(ctx context.Context, variantPath string) s
 }
 
 func (v *Viewer) fetchSegment(ctx context.Context, segmentPath string) {
+	// The segment URL from playlist already has signature
 	segmentURL := v.config.BaseURL + segmentPath
 
-	req, _ := http.NewRequestWithContext(ctx, "GET", segmentURL, nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: v.config.Token})
-
 	start := time.Now()
-	resp, err := v.client.Do(req)
+	resp, err := v.client.Get(segmentURL)
 	latency := time.Since(start)
 
 	if err != nil {
