@@ -416,9 +416,9 @@ func runTest(config Config, numViewers int, duration time.Duration) *TestResult 
 }
 
 func printResult(result *TestResult) {
-	fmt.Printf("\n" + strings.Repeat("=", 70) + "\n")
+	fmt.Print("\n" + strings.Repeat("=", 70) + "\n")
 	fmt.Printf("📊 RESULTS: %d Viewers, %v Duration\n", result.Viewers, result.Duration)
-	fmt.Printf(strings.Repeat("=", 70) + "\n")
+	fmt.Print(strings.Repeat("=", 70) + "\n")
 
 	fmt.Printf("\n📈 Request Summary:\n")
 	fmt.Printf("   %-15s %10s %10s %10s %10s\n", "Type", "Total", "Success", "Errors", "RPS")
@@ -470,9 +470,9 @@ func truncate(s string, max int) string {
 }
 
 func printSummary(results []*TestResult) {
-	fmt.Printf("\n" + strings.Repeat("=", 70) + "\n")
+	fmt.Print("\n" + strings.Repeat("=", 70) + "\n")
 	fmt.Printf("📋 COMPARISON SUMMARY\n")
-	fmt.Printf(strings.Repeat("=", 70) + "\n")
+	fmt.Print(strings.Repeat("=", 70) + "\n")
 
 	fmt.Printf("\n%-10s %12s %12s %12s %12s\n", "Viewers", "Success%", "Playlist P95", "Segment P95", "Total RPS")
 	for _, r := range results {
