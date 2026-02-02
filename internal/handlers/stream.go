@@ -18,6 +18,7 @@ import (
 	"github.com/laurikarhu/stream-paywall/internal/security"
 	"github.com/laurikarhu/stream-paywall/internal/storage"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/singleflight"
 )
 
 // hlsURLRegex matches HLS segment and playlist URLs (compiled once at package level)
@@ -50,9 +51,10 @@ type StreamHandler struct {
 	urlSigner      *security.URLSigner
 	sessionManager *security.SessionManager
 	client         *http.Client
-	streamCache    sync.Map // uuid.UUID -> *streamCacheEntry
-	playlistCache  sync.Map // string (owncastURL) -> *playlistCacheEntry
-	segmentCache   sync.Map // string (owncastURL) -> *segmentCacheEntry
+	streamCache    sync.Map            // uuid.UUID -> *streamCacheEntry
+	playlistCache  sync.Map            // string (owncastURL) -> *playlistCacheEntry
+	segmentCache   sync.Map            // string (owncastURL) -> *segmentCacheEntry
+	segmentFlight  singleflight.Group  // deduplicates concurrent segment fetches
 }
 
 // NewStreamHandler creates a new stream handler
@@ -338,49 +340,67 @@ func (h *StreamHandler) serveSegment(w http.ResponseWriter, r *http.Request, own
 		h.segmentCache.Delete(owncastURL)
 	}
 
-	// Cache miss - fetch from Owncast
-	resp, err := h.client.Get(owncastURL)
+	// Cache miss - use singleflight to deduplicate concurrent fetches
+	// When 10,000 viewers request the same new segment simultaneously,
+	// only ONE request fetches from Owncast, others wait and share the result
+	result, err, _ := h.segmentFlight.Do(owncastURL, func() (interface{}, error) {
+		// Double-check cache (another goroutine might have populated it)
+		if entry, ok := h.segmentCache.Load(owncastURL); ok {
+			e := entry.(*segmentCacheEntry)
+			if time.Now().Before(e.expiresAt) {
+				return e, nil
+			}
+		}
+
+		// Fetch from Owncast
+		resp, err := h.client.Get(owncastURL)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("owncast returned status %d", resp.StatusCode)
+		}
+
+		// Read the segment into memory
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		// Determine content type
+		contentType := resp.Header.Get("Content-Type")
+		if contentType == "" {
+			contentType = "video/mp2t"
+		}
+
+		entry := &segmentCacheEntry{
+			data:        data,
+			contentType: contentType,
+			expiresAt:   time.Now().Add(30 * time.Second),
+		}
+
+		// Cache if under 5MB
+		if len(data) < 5*1024*1024 {
+			h.segmentCache.Store(owncastURL, entry)
+		}
+
+		return entry, nil
+	})
+
 	if err != nil {
 		log.Error().Err(err).Str("url", owncastURL).Msg("Failed to fetch segment")
 		http.Error(w, "Failed to fetch segment", http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		http.Error(w, "Segment not available", resp.StatusCode)
-		return
-	}
-
-	// Read the segment into memory for caching
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to read segment")
-		http.Error(w, "Failed to fetch segment", http.StatusBadGateway)
-		return
-	}
-
-	// Determine content type
-	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "video/mp2t" // Default for TS segments
-	}
-
-	// Cache the segment for 30 seconds (enough for all viewers to fetch it)
-	// Only cache segments under 5MB to prevent memory issues
-	if len(data) < 5*1024*1024 {
-		h.segmentCache.Store(owncastURL, &segmentCacheEntry{
-			data:        data,
-			contentType: contentType,
-			expiresAt:   time.Now().Add(30 * time.Second),
-		})
-	}
-
-	// Serve the segment
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+	// Serve the segment from the result
+	entry := result.(*segmentCacheEntry)
+	w.Header().Set("Content-Type", entry.contentType)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(entry.data)))
 	w.Header().Set("Cache-Control", "public, max-age=86400")
-	w.Write(data)
+	w.Write(entry.data)
 }
 
 // GetStreamInfo returns public stream information
