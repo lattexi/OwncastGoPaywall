@@ -25,6 +25,10 @@ func NewRedisStore(ctx context.Context, redisURL string) (*RedisStore, error) {
 		return nil, fmt.Errorf("failed to parse Redis URL: %w", err)
 	}
 
+	// Increase pool size for high concurrency (default is 10 per CPU)
+	opts.PoolSize = 100
+	opts.MinIdleConns = 20
+
 	client := redis.NewClient(opts)
 
 	// Test connection
