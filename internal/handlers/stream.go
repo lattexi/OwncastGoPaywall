@@ -166,9 +166,11 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 	// Determine content type based on file extension
 	isPlaylist := strings.HasSuffix(hlsPath, ".m3u8")
 
-	// For playlist requests, validate session and device (server-side protection)
+	// For playlist requests, validate session (server-side protection)
 	// This prevents cheaters from bypassing client-side JavaScript checks
 	// Uses Redis for fast validation instead of PostgreSQL
+	// Note: Device validation is handled by the heartbeat, not here - the first playlist
+	// request happens BEFORE the first heartbeat, so we can't require a recent heartbeat.
 	if isPlaylist {
 		// Check session in Redis (fast) - session is created on payment confirmation
 		session, err := h.redis.GetSession(ctx, token)
@@ -185,20 +187,6 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 		if session.StreamID != streamID {
 			http.Error(w, "Token not valid for this stream", http.StatusForbidden)
 			return
-		}
-
-		// Check device has been active recently (within heartbeat timeout)
-		activeDevice, err := h.sessionManager.GetActiveDevice(ctx, token)
-		if err == nil && activeDevice != nil {
-			if time.Since(activeDevice.LastSeen) > h.cfg.HeartbeatTimeout {
-				log.Warn().
-					Str("stream_id", streamID).
-					Str("token", token[:8]+"...").
-					Time("last_seen", activeDevice.LastSeen).
-					Msg("Device timed out on playlist request")
-				http.Error(w, "Session expired - no recent heartbeat", http.StatusUnauthorized)
-				return
-			}
 		}
 	}
 
