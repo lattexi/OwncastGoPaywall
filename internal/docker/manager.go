@@ -459,8 +459,16 @@ func GetInternalURL(containerName string) string {
 	return fmt.Sprintf("http://%s:8080", containerName)
 }
 
-// GetRTMPURL returns the RTMP URL for streaming
-// For SRS, the stream name is the slug and the key is passed as a query parameter
-func GetRTMPURL(host string, port int, slug string) string {
-	return fmt.Sprintf("rtmp://%s:%d/live/%s?key=YOUR_STREAM_KEY", host, port, slug)
+// GetRTMPURL returns the RTMP Server URL for OBS
+// For SRS with OBS:
+//   - Server: rtmp://host:port/live
+//   - Stream Key: {slug}?key={stream_key}
+func GetRTMPURL(host string, port int) string {
+	return fmt.Sprintf("rtmp://%s:%d/live", host, port)
+}
+
+// GetOBSStreamKey returns the stream key formatted for OBS
+// Format: {slug}?key={stream_key}
+func GetOBSStreamKey(slug, streamKey string) string {
+	return fmt.Sprintf("%s?key=%s", slug, streamKey)
 }

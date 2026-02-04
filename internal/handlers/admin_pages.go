@@ -239,8 +239,9 @@ func (h *AdminPageHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
 // StreamWithStats extends Stream with additional stats
 type StreamWithStats struct {
 	*models.Stream
-	PriceEuros float64
-	RTMPURL    string // Full RTMP URL for OBS configuration
+	PriceEuros   float64
+	RTMPURL      string // RTMP Server URL for OBS (rtmp://host:port/live)
+	OBSStreamKey string // Stream key for OBS ({slug}?key={stream_key})
 }
 
 // ListStreams renders the streams list
@@ -255,13 +256,14 @@ func (h *AdminPageHandler) ListStreams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add price in euros and RTMP URL
+	// Add price in euros, RTMP URL, and OBS stream key
 	var streamsWithStats []StreamWithStats
 	for _, s := range streams {
 		streamsWithStats = append(streamsWithStats, StreamWithStats{
-			Stream:     s,
-			PriceEuros: float64(s.PriceCents) / 100,
-			RTMPURL:    docker.GetRTMPURL(h.cfg.RTMPPublicHost, s.RTMPPort, s.Slug),
+			Stream:       s,
+			PriceEuros:   float64(s.PriceCents) / 100,
+			RTMPURL:      docker.GetRTMPURL(h.cfg.RTMPPublicHost, s.RTMPPort),
+			OBSStreamKey: docker.GetOBSStreamKey(s.Slug, s.StreamKey),
 		})
 	}
 
@@ -448,9 +450,10 @@ func (h *AdminPageHandler) EditStreamForm(w http.ResponseWriter, r *http.Request
 			Year:       time.Now().Year(),
 		},
 		Stream: &StreamWithStats{
-			Stream:     stream,
-			PriceEuros: float64(stream.PriceCents) / 100,
-			RTMPURL:    docker.GetRTMPURL(h.cfg.RTMPPublicHost, stream.RTMPPort, stream.Slug),
+			Stream:       stream,
+			PriceEuros:   float64(stream.PriceCents) / 100,
+			RTMPURL:      docker.GetRTMPURL(h.cfg.RTMPPublicHost, stream.RTMPPort),
+			OBSStreamKey: docker.GetOBSStreamKey(stream.Slug, stream.StreamKey),
 		},
 		IsEdit:   true,
 		AdminKey: h.cfg.AdminAPIKey,

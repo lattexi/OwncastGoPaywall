@@ -22,7 +22,8 @@ import (
 )
 
 // hlsURLRegex matches HLS segment and playlist URLs (compiled once at package level)
-var hlsURLRegex = regexp.MustCompile(`^[^#].*\.(ts|m4s|m3u8)(\?.*)?$`)
+// Handles lines that may have leading/trailing whitespace
+var hlsURLRegex = regexp.MustCompile(`^\s*[^#\s].*\.(ts|m4s|m3u8)(\?.*)?[\s]*$`)
 
 // streamCacheEntry holds cached stream data with expiry
 type streamCacheEntry struct {
@@ -184,8 +185,11 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 	if hlsPath == "stream.m3u8" {
 		// Map generic playlist request to SRS format using the slug
 		srsPath = fmt.Sprintf("live/%s.m3u8", stream.Slug)
+	} else if strings.HasPrefix(hlsPath, "live/") {
+		// Already has live/ prefix (from SRS playlist references)
+		srsPath = hlsPath
 	} else {
-		// Segments and other files are already named correctly by SRS (e.g., {slug}-0.ts)
+		// Segments and other files need live/ prefix
 		srsPath = "live/" + hlsPath
 	}
 	srsURL := fmt.Sprintf("http://srs-%s:8080/%s", stream.Slug, srsPath)
@@ -260,6 +264,14 @@ func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, st
 			}
 			content := string(body)
 
+			// Log the raw SRS playlist content (only on cache miss, ~once per 4 seconds)
+			log.Info().
+				Str("srs_url", srsURL).
+				Int("content_length", len(content)).
+				Bool("has_extinf", strings.Contains(content, "#EXTINF")).
+				Bool("has_stream_inf", strings.Contains(content, "#EXT-X-STREAM-INF")).
+				Msg("Fetched playlist from SRS")
+
 			// Cache for 4 seconds (HLS segments are typically 2-6 seconds)
 			h.playlistCache.Store(srsURL, &playlistCacheEntry{
 				content:   content,
@@ -275,6 +287,38 @@ func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, st
 			return
 		}
 		originalPlaylist = result.(string)
+	}
+
+	// Check if playlist is valid (has segments or is a master playlist)
+	hasSegments := strings.Contains(originalPlaylist, "#EXTINF")
+	isMaster := strings.Contains(originalPlaylist, "#EXT-X-STREAM-INF")
+
+	// If playlist has no segments and isn't a master playlist, stream may not be ready
+	if !hasSegments && !isMaster {
+		log.Warn().
+			Str("stream_id", streamID).
+			Str("hls_path", hlsPath).
+			Msg("Playlist has no segments - stream may not be publishing")
+		// Return a valid but empty playlist to prevent rapid retries
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Retry-After", "2")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n"))
+		return
+	}
+
+	// If it's a master playlist, log for debugging (this shouldn't happen with single-bitrate SRS)
+	if isMaster {
+		preview := originalPlaylist
+		if len(preview) > 500 {
+			preview = preview[:500]
+		}
+		log.Warn().
+			Str("stream_id", streamID).
+			Str("hls_path", hlsPath).
+			Str("playlist_preview", preview).
+			Msg("Received master playlist from SRS - this may cause issues")
 	}
 
 	// Rewrite playlist with token URLs
@@ -309,19 +353,19 @@ func (h *StreamHandler) rewritePlaylist(body io.Reader, streamID, token, baseDir
 
 		// Check if this line is a URL (segment or nested playlist)
 		if hlsURLRegex.MatchString(line) {
-			// Extract the filename/path
-			originalPath := line
-			
+			// Extract the filename/path and trim whitespace
+			originalPath := strings.TrimSpace(line)
+
 			// Remove any existing query params
 			if idx := strings.Index(originalPath, "?"); idx != -1 {
 				originalPath = originalPath[:idx]
 			}
-			
+
 			// Handle relative paths - prepend the base directory
 			if !strings.HasPrefix(originalPath, "/") && !strings.HasPrefix(originalPath, "http") {
 				originalPath = baseDir + originalPath
 			}
-			
+
 			// Build the proxy URL with token (no signature needed - validated via Redis)
 			proxyPath := "/stream/" + streamID + "/hls/" + originalPath + "?token=" + token
 
