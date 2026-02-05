@@ -28,14 +28,45 @@
         border-radius: 12px;
         box-shadow: var(--shadow-md);
     }
+    .unmute-prompt {
+        position: absolute;
+        bottom: 80px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 10;
+        animation: fadeInUp 0.3s ease;
+    }
+    .unmute-prompt button {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.75rem 1.5rem;
+        font-size: 1rem;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+    @keyframes fadeInUp {
+        from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+        to { opacity: 1; transform: translateX(-50%) translateY(0); }
+    }
 </style>
 {{end}}
 
 {{define "content"}}
 <div class="watch-container">
     <div class="video-wrapper">
-        <video id="video-player" controls playsinline></video>
+        <video id="video-player" controls playsinline autoplay muted></video>
         
+        <div id="unmute-prompt" class="unmute-prompt" style="display: none;">
+            <button id="unmute-btn" class="btn btn-primary">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                    <line x1="23" y1="9" x2="17" y2="15"></line>
+                    <line x1="17" y1="9" x2="23" y2="15"></line>
+                </svg>
+                Click to unmute
+            </button>
+        </div>
+
         <div id="video-overlay" class="video-overlay hidden">
             <div>
                 <h2 id="overlay-title">Loading...</h2>
@@ -84,6 +115,29 @@ document.addEventListener('DOMContentLoaded', async function() {
         overlay.classList.add('hidden');
     }
 
+    const unmutePrompt = document.getElementById('unmute-prompt');
+    const unmuteBtn = document.getElementById('unmute-btn');
+
+    function showUnmutePrompt() {
+        unmutePrompt.style.display = 'block';
+    }
+
+    function hideUnmutePrompt() {
+        unmutePrompt.style.display = 'none';
+    }
+
+    unmuteBtn.addEventListener('click', function() {
+        videoElement.muted = false;
+        hideUnmutePrompt();
+    });
+
+    // Also hide prompt if user unmutes via video controls
+    videoElement.addEventListener('volumechange', function() {
+        if (!videoElement.muted) {
+            hideUnmutePrompt();
+        }
+    });
+
     // Initialize player
     showOverlay('Loading...', 'Preparing stream...');
 
@@ -95,16 +149,15 @@ document.addEventListener('DOMContentLoaded', async function() {
         
         onReady: function() {
             hideOverlay();
-            // Autoplay with muted (browsers require this)
-            videoElement.muted = true;
-            videoElement.play().then(() => {
-                // Unmute after autoplay succeeds
-                setTimeout(() => {
-                    videoElement.muted = false;
-                }, 100);
-            }).catch(err => {
+            // Try to play (video element has autoplay muted attributes)
+            videoElement.play().catch(err => {
                 console.log('Autoplay prevented:', err);
             });
+
+            // Show unmute prompt if muted
+            if (videoElement.muted) {
+                showUnmutePrompt();
+            }
         },
         
         onError: function(error) {
