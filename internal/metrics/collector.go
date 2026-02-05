@@ -177,6 +177,21 @@ func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMet
 		// Calculate CPU percentage
 		cpuPercent := calculateCPUPercent(&stats)
 
+		// Debug logging for CPU stats
+		containerName := ctr.ID[:12]
+		if len(ctr.Names) > 0 {
+			containerName = strings.TrimPrefix(ctr.Names[0], "/")
+		}
+		log.Debug().
+			Str("container", containerName).
+			Uint64("cpu_total", stats.CPUStats.CPUUsage.TotalUsage).
+			Uint64("pre_cpu_total", stats.PreCPUStats.CPUUsage.TotalUsage).
+			Uint64("system", stats.CPUStats.SystemUsage).
+			Uint64("pre_system", stats.PreCPUStats.SystemUsage).
+			Uint32("online_cpus", stats.CPUStats.OnlineCPUs).
+			Float64("calculated_cpu_percent", cpuPercent).
+			Msg("Container CPU stats")
+
 		// Calculate memory
 		memoryUsageMB := float64(stats.MemoryStats.Usage) / (1024 * 1024)
 		memoryLimitMB := float64(stats.MemoryStats.Limit) / (1024 * 1024)
@@ -250,14 +265,49 @@ func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMet
 }
 
 // calculateCPUPercent calculates CPU percentage from stats
+// This matches the calculation used by `docker stats` CLI
 func calculateCPUPercent(stats *container.StatsResponse) float64 {
+	// Get number of CPUs - OnlineCPUs can be 0 in some configurations
+	numCPUs := stats.CPUStats.OnlineCPUs
+	if numCPUs == 0 {
+		// Fall back to counting per-CPU usage entries
+		numCPUs = uint32(len(stats.CPUStats.CPUUsage.PercpuUsage))
+	}
+	if numCPUs == 0 {
+		numCPUs = 1 // Minimum fallback
+	}
+
+	// Check if we have valid previous stats
+	if stats.PreCPUStats.CPUUsage.TotalUsage == 0 {
+		// No previous stats available, can't calculate delta
+		return 0
+	}
+
 	cpuDelta := float64(stats.CPUStats.CPUUsage.TotalUsage - stats.PreCPUStats.CPUUsage.TotalUsage)
+
+	// Try system CPU delta first (works on most Linux systems)
 	systemDelta := float64(stats.CPUStats.SystemUsage - stats.PreCPUStats.SystemUsage)
 
 	if systemDelta > 0 && cpuDelta > 0 {
-		cpuPercent := (cpuDelta / systemDelta) * float64(stats.CPUStats.OnlineCPUs) * 100.0
+		// Standard calculation: (container CPU delta / system CPU delta) * num CPUs * 100
+		cpuPercent := (cpuDelta / systemDelta) * float64(numCPUs) * 100.0
 		return cpuPercent
 	}
+
+	// Fallback for systems where SystemUsage is not available (e.g., some cgroups v2 setups)
+	// Use the per-CPU usage if available
+	if len(stats.CPUStats.CPUUsage.PercpuUsage) > 0 && len(stats.PreCPUStats.CPUUsage.PercpuUsage) > 0 {
+		var totalDelta uint64
+		for i := 0; i < len(stats.CPUStats.CPUUsage.PercpuUsage) && i < len(stats.PreCPUStats.CPUUsage.PercpuUsage); i++ {
+			if stats.CPUStats.CPUUsage.PercpuUsage[i] > stats.PreCPUStats.CPUUsage.PercpuUsage[i] {
+				totalDelta += stats.CPUStats.CPUUsage.PercpuUsage[i] - stats.PreCPUStats.CPUUsage.PercpuUsage[i]
+			}
+		}
+		if totalDelta > 0 && systemDelta > 0 {
+			return (float64(totalDelta) / systemDelta) * 100.0
+		}
+	}
+
 	return 0
 }
 
