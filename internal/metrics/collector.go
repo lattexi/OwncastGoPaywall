@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -84,19 +85,29 @@ type SystemMetrics struct {
 	Alerts            []Alert            `json:"alerts"`
 }
 
+// cpuStatsCache stores previous CPU stats for delta calculation
+type cpuStatsCache struct {
+	totalUsage  uint64
+	systemUsage uint64
+	timestamp   time.Time
+}
+
 // Collector collects metrics from various sources
 type Collector struct {
-	dockerClient *client.Client
-	redisClient  *redis.Client
-	pgPool       *pgxpool.Pool
+	dockerClient  *client.Client
+	redisClient   *redis.Client
+	pgPool        *pgxpool.Pool
+	cpuStatsCache map[string]*cpuStatsCache // container ID -> previous stats
+	cacheMu       sync.Mutex
 }
 
 // NewCollector creates a new metrics collector
 func NewCollector(dockerClient *client.Client, redisClient *redis.Client, pgPool *pgxpool.Pool) *Collector {
 	return &Collector{
-		dockerClient: dockerClient,
-		redisClient:  redisClient,
-		pgPool:       pgPool,
+		dockerClient:  dockerClient,
+		redisClient:   redisClient,
+		pgPool:        pgPool,
+		cpuStatsCache: make(map[string]*cpuStatsCache),
 	}
 }
 
@@ -174,23 +185,8 @@ func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMet
 		}
 		statsResp.Body.Close()
 
-		// Calculate CPU percentage
-		cpuPercent := calculateCPUPercent(&stats)
-
-		// Debug logging for CPU stats
-		containerName := ctr.ID[:12]
-		if len(ctr.Names) > 0 {
-			containerName = strings.TrimPrefix(ctr.Names[0], "/")
-		}
-		log.Debug().
-			Str("container", containerName).
-			Uint64("cpu_total", stats.CPUStats.CPUUsage.TotalUsage).
-			Uint64("pre_cpu_total", stats.PreCPUStats.CPUUsage.TotalUsage).
-			Uint64("system", stats.CPUStats.SystemUsage).
-			Uint64("pre_system", stats.PreCPUStats.SystemUsage).
-			Uint32("online_cpus", stats.CPUStats.OnlineCPUs).
-			Float64("calculated_cpu_percent", cpuPercent).
-			Msg("Container CPU stats")
+		// Calculate CPU percentage using cached previous stats
+		cpuPercent := c.calculateCPUPercentWithCache(ctr.ID, &stats)
 
 		// Calculate memory
 		memoryUsageMB := float64(stats.MemoryStats.Usage) / (1024 * 1024)
@@ -264,51 +260,52 @@ func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMet
 	return owncastContainers, otherContainers, alerts
 }
 
-// calculateCPUPercent calculates CPU percentage from stats
-// This matches the calculation used by `docker stats` CLI
-func calculateCPUPercent(stats *container.StatsResponse) float64 {
-	// Get number of CPUs - OnlineCPUs can be 0 in some configurations
+// calculateCPUPercentWithCache calculates CPU percentage using cached previous stats
+// This is needed because ContainerStatsOneShot doesn't always provide PreCPUStats
+func (c *Collector) calculateCPUPercentWithCache(containerID string, stats *container.StatsResponse) float64 {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+
+	// Get number of CPUs
 	numCPUs := stats.CPUStats.OnlineCPUs
 	if numCPUs == 0 {
-		// Fall back to counting per-CPU usage entries
 		numCPUs = uint32(len(stats.CPUStats.CPUUsage.PercpuUsage))
 	}
 	if numCPUs == 0 {
-		numCPUs = 1 // Minimum fallback
+		numCPUs = 1
 	}
 
-	// Check if we have valid previous stats
-	if stats.PreCPUStats.CPUUsage.TotalUsage == 0 {
-		// No previous stats available, can't calculate delta
+	currentCPU := stats.CPUStats.CPUUsage.TotalUsage
+	currentSystem := stats.CPUStats.SystemUsage
+
+	// Get cached previous stats
+	prev, hasPrev := c.cpuStatsCache[containerID]
+
+	// Update cache with current stats
+	c.cpuStatsCache[containerID] = &cpuStatsCache{
+		totalUsage:  currentCPU,
+		systemUsage: currentSystem,
+		timestamp:   time.Now(),
+	}
+
+	// If no previous stats, we can't calculate delta yet
+	if !hasPrev || prev.totalUsage == 0 || prev.systemUsage == 0 {
 		return 0
 	}
 
-	cpuDelta := float64(stats.CPUStats.CPUUsage.TotalUsage - stats.PreCPUStats.CPUUsage.TotalUsage)
+	// Calculate deltas
+	cpuDelta := float64(currentCPU - prev.totalUsage)
+	systemDelta := float64(currentSystem - prev.systemUsage)
 
-	// Try system CPU delta first (works on most Linux systems)
-	systemDelta := float64(stats.CPUStats.SystemUsage - stats.PreCPUStats.SystemUsage)
-
-	if systemDelta > 0 && cpuDelta > 0 {
-		// Standard calculation: (container CPU delta / system CPU delta) * num CPUs * 100
-		cpuPercent := (cpuDelta / systemDelta) * float64(numCPUs) * 100.0
-		return cpuPercent
+	// Avoid division by zero and handle counter wraps
+	if systemDelta <= 0 || cpuDelta < 0 {
+		return 0
 	}
 
-	// Fallback for systems where SystemUsage is not available (e.g., some cgroups v2 setups)
-	// Use the per-CPU usage if available
-	if len(stats.CPUStats.CPUUsage.PercpuUsage) > 0 && len(stats.PreCPUStats.CPUUsage.PercpuUsage) > 0 {
-		var totalDelta uint64
-		for i := 0; i < len(stats.CPUStats.CPUUsage.PercpuUsage) && i < len(stats.PreCPUStats.CPUUsage.PercpuUsage); i++ {
-			if stats.CPUStats.CPUUsage.PercpuUsage[i] > stats.PreCPUStats.CPUUsage.PercpuUsage[i] {
-				totalDelta += stats.CPUStats.CPUUsage.PercpuUsage[i] - stats.PreCPUStats.CPUUsage.PercpuUsage[i]
-			}
-		}
-		if totalDelta > 0 && systemDelta > 0 {
-			return (float64(totalDelta) / systemDelta) * 100.0
-		}
-	}
+	// Standard Docker CPU calculation
+	cpuPercent := (cpuDelta / systemDelta) * float64(numCPUs) * 100.0
 
-	return 0
+	return cpuPercent
 }
 
 // collectRedisMetrics collects Redis server metrics
