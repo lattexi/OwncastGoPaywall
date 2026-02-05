@@ -44,6 +44,11 @@ func (s *RedisStore) Close() error {
 	return s.client.Close()
 }
 
+// GetClient returns the underlying Redis client for direct access
+func (s *RedisStore) GetClient() *redis.Client {
+	return s.client
+}
+
 // --- Session Operations ---
 
 // Key patterns

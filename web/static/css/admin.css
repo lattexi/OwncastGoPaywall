@@ -536,3 +536,254 @@ select:focus {
 .streaming-instructions li:last-child {
     margin-bottom: 0;
 }
+
+/* Video Variants Table */
+.preset-buttons {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+
+.preset-label {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin-right: 0.5rem;
+}
+
+.variants-table {
+    margin-bottom: 1rem;
+}
+
+.variants-table th {
+    font-size: 0.75rem;
+    padding: 0.75rem;
+}
+
+.variants-table td {
+    padding: 0.5rem;
+    vertical-align: middle;
+}
+
+.variant-input {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 0.875rem;
+}
+
+.variant-input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+}
+
+.variant-input:disabled {
+    background: #f1f5f9;
+    color: var(--text-secondary);
+}
+
+.variants-table input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+
+.variants-table select.variant-input {
+    min-width: 100px;
+}
+
+/* Metrics Dashboard */
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+.metrics-card {
+    background: white;
+    border-radius: 12px;
+    padding: 1.5rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.metrics-card h3 {
+    margin: 0 0 1rem 0;
+    font-size: 1rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.metrics-card-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.metric-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.metric-label {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.metric-value {
+    font-weight: 600;
+    font-size: 1rem;
+}
+
+.metric-value.large {
+    font-size: 1.5rem;
+}
+
+/* Progress bars for metrics */
+.progress-bar {
+    width: 100%;
+    height: 8px;
+    background: #e2e8f0;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 0.25rem;
+}
+
+.progress-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.3s ease;
+}
+
+.progress-fill.healthy {
+    background: #10b981;
+}
+
+.progress-fill.warning {
+    background: #f59e0b;
+}
+
+.progress-fill.critical {
+    background: #ef4444;
+}
+
+/* Container list in metrics */
+.container-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.container-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    background: #f8fafc;
+    border-radius: 8px;
+}
+
+.container-status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.container-status-dot.healthy {
+    background: #10b981;
+}
+
+.container-status-dot.warning {
+    background: #f59e0b;
+}
+
+.container-status-dot.critical {
+    background: #ef4444;
+}
+
+.container-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.container-name {
+    font-weight: 500;
+    font-size: 0.875rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.container-stats {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+/* Alerts section */
+.alerts-section {
+    margin-bottom: 2rem;
+}
+
+.alert-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1rem;
+    border-radius: 8px;
+    margin-bottom: 0.5rem;
+}
+
+.alert-item.warning {
+    background: #fef3c7;
+    border-left: 4px solid #f59e0b;
+}
+
+.alert-item.critical {
+    background: #fee2e2;
+    border-left: 4px solid #ef4444;
+}
+
+.alert-icon {
+    font-size: 1.25rem;
+}
+
+.alert-content {
+    flex: 1;
+}
+
+.alert-component {
+    font-weight: 600;
+    font-size: 0.875rem;
+}
+
+.alert-message {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+/* Auto-refresh indicator */
+.refresh-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.refresh-dot {
+    width: 8px;
+    height: 8px;
+    background: #10b981;
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}

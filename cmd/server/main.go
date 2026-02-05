@@ -12,6 +12,7 @@ import (
 	"github.com/laurikarhu/stream-paywall/internal/config"
 	"github.com/laurikarhu/stream-paywall/internal/docker"
 	"github.com/laurikarhu/stream-paywall/internal/handlers"
+	"github.com/laurikarhu/stream-paywall/internal/metrics"
 	"github.com/laurikarhu/stream-paywall/internal/middleware"
 	"github.com/laurikarhu/stream-paywall/internal/storage"
 	"github.com/rs/zerolog"
@@ -105,6 +106,15 @@ func main() {
 	// Initialize Owncast proxy handler
 	owncastProxyHandler := handlers.NewOwncastProxyHandler(cfg, pgStore, redisStore, adminSessionMiddleware)
 
+	// Initialize metrics collector and handler
+	var metricsCollector *metrics.Collector
+	if dockerMgr != nil {
+		metricsCollector = metrics.NewCollector(dockerMgr.GetClient(), redisStore.GetClient(), pgStore.GetPool())
+	} else {
+		metricsCollector = metrics.NewCollector(nil, redisStore.GetClient(), pgStore.GetPool())
+	}
+	metricsHandler := handlers.NewMetricsHandler(metricsCollector)
+
 	// Create router
 	mux := http.NewServeMux()
 
@@ -178,6 +188,10 @@ func main() {
 
 	// Admin API for AJAX requests (protected by session)
 	mux.Handle("GET /admin/api/streams/{id}/viewers", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.GetViewerCountAPI)))
+
+	// Metrics routes
+	mux.Handle("GET /admin/metrics", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.MetricsPage)))
+	mux.Handle("GET /admin/api/metrics", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(metricsHandler.GetMetrics)))
 
 	// Page routes
 	mux.HandleFunc("GET /{$}", pageHandler.Home) // Exact match for root

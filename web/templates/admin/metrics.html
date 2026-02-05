@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System Metrics - Admin</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body class="admin-body">
+    <nav class="admin-nav">
+        <div class="admin-nav-brand">
+            <a href="/admin">Admin Panel</a>
+        </div>
+        <div class="admin-nav-links">
+            <a href="/admin">Dashboard</a>
+            <a href="/admin/streams">Streams</a>
+            <a href="/admin/metrics" class="active">Metrics</a>
+        </div>
+        <div class="admin-nav-user">
+            <span>{{.Username}}</span>
+            <a href="/admin/logout" class="btn btn-secondary btn-sm">Logout</a>
+        </div>
+    </nav>
+
+    <main class="admin-main">
+        <div class="admin-container">
+            <div class="admin-header">
+                <h1>System Metrics</h1>
+                <div class="refresh-indicator">
+                    <span class="refresh-dot"></span>
+                    <span>Auto-refresh: 5s</span>
+                </div>
+            </div>
+
+            <!-- Alerts Section -->
+            <div id="alerts-section" class="alerts-section" style="display: none;">
+                <div id="alerts-container"></div>
+            </div>
+
+            <!-- Metrics Grid -->
+            <div class="metrics-grid">
+                <!-- Owncast Containers -->
+                <div class="metrics-card">
+                    <h3>Owncast Containers</h3>
+                    <div id="owncast-containers" class="container-list">
+                        <div style="text-align: center; color: var(--text-secondary);">Loading...</div>
+                    </div>
+                </div>
+
+                <!-- Redis -->
+                <div class="metrics-card">
+                    <h3>Redis</h3>
+                    <div class="metrics-card-content">
+                        <div class="metric-row">
+                            <span class="metric-label">Memory Usage</span>
+                            <span id="redis-memory" class="metric-value">--</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div id="redis-memory-bar" class="progress-fill healthy" style="width: 0%"></div>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">Connected Clients</span>
+                            <span id="redis-clients" class="metric-value">--</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">Hit Rate</span>
+                            <span id="redis-hitrate" class="metric-value">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PostgreSQL -->
+                <div class="metrics-card">
+                    <h3>PostgreSQL</h3>
+                    <div class="metrics-card-content">
+                        <div class="metric-row">
+                            <span class="metric-label">Connections</span>
+                            <span id="pg-connections" class="metric-value">--</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div id="pg-connections-bar" class="progress-fill healthy" style="width: 0%"></div>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">Active</span>
+                            <span id="pg-active" class="metric-value">--</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">Idle</span>
+                            <span id="pg-idle" class="metric-value">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Go Runtime -->
+                <div class="metrics-card">
+                    <h3>Go Runtime</h3>
+                    <div class="metrics-card-content">
+                        <div class="metric-row">
+                            <span class="metric-label">Goroutines</span>
+                            <span id="go-goroutines" class="metric-value large">--</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">Heap Allocated</span>
+                            <span id="go-heap" class="metric-value">--</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">Heap System</span>
+                            <span id="go-heapsys" class="metric-value">--</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">GC Cycles</span>
+                            <span id="go-gc" class="metric-value">--</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Other Containers -->
+            <div class="admin-section">
+                <div class="section-header">
+                    <h2>Other Containers</h2>
+                </div>
+                <div id="other-containers" class="container-list">
+                    <div style="text-align: center; color: var(--text-secondary); padding: 1rem;">Loading...</div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+    // Metrics refresh interval
+    const REFRESH_INTERVAL = 5000;
+
+    // Fetch and update metrics
+    async function fetchMetrics() {
+        try {
+            const response = await fetch('/admin/api/metrics');
+            if (!response.ok) {
+                throw new Error('Failed to fetch metrics');
+            }
+            const data = await response.json();
+            updateUI(data);
+        } catch (error) {
+            console.error('Error fetching metrics:', error);
+        }
+    }
+
+    // Update UI with metrics data
+    function updateUI(metrics) {
+        // Update alerts
+        updateAlerts(metrics.alerts);
+
+        // Update Owncast containers
+        updateOwncastContainers(metrics.owncastContainers || []);
+
+        // Update Redis metrics
+        updateRedisMetrics(metrics.redis);
+
+        // Update Postgres metrics
+        updatePostgresMetrics(metrics.postgres);
+
+        // Update Go runtime metrics
+        updateGoRuntimeMetrics(metrics.goRuntime);
+
+        // Update other containers
+        updateOtherContainers(metrics.otherContainers || []);
+    }
+
+    // Update alerts section
+    function updateAlerts(alerts) {
+        const section = document.getElementById('alerts-section');
+        const container = document.getElementById('alerts-container');
+
+        if (!alerts || alerts.length === 0) {
+            section.style.display = 'none';
+            return;
+        }
+
+        section.style.display = 'block';
+        container.innerHTML = alerts.map(alert => `
+            <div class="alert-item ${alert.level}">
+                <span class="alert-icon">${alert.level === 'critical' ? '&#9888;' : '&#9888;'}</span>
+                <div class="alert-content">
+                    <div class="alert-component">${escapeHtml(alert.component)}</div>
+                    <div class="alert-message">${escapeHtml(alert.message)}</div>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    // Update Owncast containers list
+    function updateOwncastContainers(containers) {
+        const el = document.getElementById('owncast-containers');
+
+        if (containers.length === 0) {
+            el.innerHTML = '<div style="text-align: center; color: var(--text-secondary);">No Owncast containers running</div>';
+            return;
+        }
+
+        el.innerHTML = containers.map(c => `
+            <div class="container-item">
+                <span class="container-status-dot ${c.status}"></span>
+                <div class="container-info">
+                    <div class="container-name">${escapeHtml(c.name)}</div>
+                    <div class="container-stats">
+                        CPU: ${c.cpuPercent.toFixed(1)}% |
+                        Mem: ${c.memoryUsageMB.toFixed(0)} MB (${c.memoryPercent.toFixed(1)}%)
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    // Update Redis metrics
+    function updateRedisMetrics(redis) {
+        if (!redis) return;
+
+        const memText = redis.maxMemoryMB > 0
+            ? `${redis.usedMemoryMB.toFixed(1)} / ${redis.maxMemoryMB.toFixed(0)} MB`
+            : `${redis.usedMemoryMB.toFixed(1)} MB`;
+        document.getElementById('redis-memory').textContent = memText;
+
+        const memBar = document.getElementById('redis-memory-bar');
+        memBar.style.width = `${Math.min(redis.memoryPercent || 0, 100)}%`;
+        memBar.className = `progress-fill ${getStatusClass(redis.memoryPercent || 0)}`;
+
+        document.getElementById('redis-clients').textContent = redis.connectedClients;
+        document.getElementById('redis-hitrate').textContent = `${redis.hitRate.toFixed(1)}%`;
+    }
+
+    // Update Postgres metrics
+    function updatePostgresMetrics(pg) {
+        if (!pg) return;
+
+        const total = pg.activeConnections + pg.idleConnections;
+        document.getElementById('pg-connections').textContent = `${total} / ${pg.maxConnections}`;
+
+        const connBar = document.getElementById('pg-connections-bar');
+        connBar.style.width = `${Math.min(pg.connectionPercent, 100)}%`;
+        connBar.className = `progress-fill ${getStatusClass(pg.connectionPercent)}`;
+
+        document.getElementById('pg-active').textContent = pg.activeConnections;
+        document.getElementById('pg-idle').textContent = pg.idleConnections;
+    }
+
+    // Update Go runtime metrics
+    function updateGoRuntimeMetrics(goRuntime) {
+        if (!goRuntime) return;
+
+        document.getElementById('go-goroutines').textContent = goRuntime.goroutines;
+        document.getElementById('go-heap').textContent = `${goRuntime.heapAllocMB.toFixed(1)} MB`;
+        document.getElementById('go-heapsys').textContent = `${goRuntime.heapSysMB.toFixed(1)} MB`;
+        document.getElementById('go-gc').textContent = goRuntime.numGC;
+    }
+
+    // Update other containers list
+    function updateOtherContainers(containers) {
+        const el = document.getElementById('other-containers');
+
+        if (containers.length === 0) {
+            el.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 1rem;">No other containers detected</div>';
+            return;
+        }
+
+        el.innerHTML = containers.map(c => `
+            <div class="container-item">
+                <span class="container-status-dot ${c.status}"></span>
+                <div class="container-info">
+                    <div class="container-name">${escapeHtml(c.name)}</div>
+                    <div class="container-stats">
+                        CPU: ${c.cpuPercent.toFixed(1)}% |
+                        Mem: ${c.memoryUsageMB.toFixed(0)} MB |
+                        Net: ${c.networkRxMB.toFixed(1)} MB rx / ${c.networkTxMB.toFixed(1)} MB tx
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    // Get status class based on percentage
+    function getStatusClass(percent) {
+        if (percent >= 90) return 'critical';
+        if (percent >= 75) return 'warning';
+        return 'healthy';
+    }
+
+    // Escape HTML to prevent XSS
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // Initial fetch and start auto-refresh
+    fetchMetrics();
+    setInterval(fetchMetrics, REFRESH_INTERVAL);
+    </script>
+</body>
+</html>

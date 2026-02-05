@@ -833,6 +833,28 @@ func (h *AdminPageHandler) GetViewerCountAPI(w http.ResponseWriter, r *http.Requ
 	})
 }
 
+// --- Metrics Page ---
+
+// MetricsPage renders the metrics dashboard
+func (h *AdminPageHandler) MetricsPage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	session := middleware.GetAdminSession(ctx)
+
+	data := struct {
+		AdminBaseData
+	}{
+		AdminBaseData: AdminBaseData{
+			Title:      "System Metrics",
+			ActivePage: "metrics",
+			ShowNav:    true,
+			Username:   session.Username,
+			Year:       time.Now().Year(),
+		},
+	}
+
+	h.render(w, "metrics.html", data)
+}
+
 // render renders a template
 func (h *AdminPageHandler) render(w http.ResponseWriter, name string, data interface{}) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

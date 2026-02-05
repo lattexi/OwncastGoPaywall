@@ -47,6 +47,11 @@ func (s *PostgresStore) Close() {
 	s.pool.Close()
 }
 
+// GetPool returns the underlying connection pool for direct access
+func (s *PostgresStore) GetPool() *pgxpool.Pool {
+	return s.pool
+}
+
 // --- Stream Operations ---
 
 // streamColumns is the list of columns for stream queries

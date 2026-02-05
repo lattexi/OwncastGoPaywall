@@ -97,6 +97,11 @@ func (m *Manager) Close() error {
 	return m.client.Close()
 }
 
+// GetClient returns the underlying Docker client for direct access
+func (m *Manager) GetClient() *client.Client {
+	return m.client
+}
+
 // GenerateStreamKey generates a random stream key
 func GenerateStreamKey() (string, error) {
 	bytes := make([]byte, 16)

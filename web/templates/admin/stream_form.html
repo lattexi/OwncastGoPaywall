@@ -15,6 +15,7 @@
         <div class="admin-nav-links">
             <a href="/admin">Dashboard</a>
             <a href="/admin/streams" class="active">Streams</a>
+            <a href="/admin/metrics">Metrics</a>
         </div>
         <div class="admin-nav-user">
             <span>{{.Username}}</span>
@@ -76,52 +77,55 @@
                 {{if eq .Stream.ContainerStatus "running"}}
                 <!-- Video Encoding Settings -->
                 <div class="video-settings-section" style="margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border);">
-                    <h3>Video Encoding Settings</h3>
+                    <h3>Video Quality Variants</h3>
+                    <p class="form-help" style="margin-bottom: 1rem;">Configure multiple quality variants for adaptive bitrate streaming (ABR). Viewers will automatically switch between qualities based on their connection.</p>
+
                     <div id="video-settings-loading">Loading settings...</div>
                     <div id="video-settings-form" style="display: none;">
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label for="videoBitrate">Video Bitrate (kbps)</label>
-                                <input type="number" id="videoBitrate" min="500" max="10000" step="100" value="1200">
-                                <div class="form-help">Recommended: 1200-4000 kbps</div>
-                            </div>
-                            <div class="form-group">
-                                <label for="framerate">Framerate (fps)</label>
-                                <input type="number" id="framerate" min="1" max="120" step="0.001" value="30">
-                                <div class="form-help">Match your source fps (e.g., 29.97, 59.94)</div>
-                            </div>
+                        <!-- Preset Buttons -->
+                        <div class="preset-buttons">
+                            <span class="preset-label">Add preset:</span>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="addPreset('1080p')">1080p</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="addPreset('720p')">720p</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="addPreset('480p')">480p</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="addPreset('360p')">360p</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="addPreset('passthrough')">Passthrough</button>
                         </div>
-                        <div class="form-row">
+
+                        <!-- Variants Table -->
+                        <table class="admin-table variants-table" id="variants-table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Bitrate (kbps)</th>
+                                    <th>FPS</th>
+                                    <th>Encoding Speed</th>
+                                    <th>Passthrough</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="variants-body">
+                                <!-- Variants will be rendered here by JavaScript -->
+                            </tbody>
+                        </table>
+
+                        <div class="form-row" style="margin-top: 1rem;">
                             <div class="form-group">
-                                <label for="cpuUsageLevel">Encoding Speed</label>
-                                <select id="cpuUsageLevel">
-                                    <option value="1">Fastest (lowest quality)</option>
-                                    <option value="2">Fast</option>
-                                    <option value="3">Balanced</option>
-                                    <option value="4">Slow (better quality)</option>
-                                    <option value="5">Slowest (best quality)</option>
-                                </select>
-                                <div class="form-help">Slower = better quality but more CPU usage</div>
-                            </div>
-                            <div class="form-group">
-                                <label for="latencyLevel">Latency</label>
+                                <label for="latencyLevel">Stream Latency</label>
                                 <select id="latencyLevel">
                                     <option value="1">Low latency (~4s delay)</option>
                                     <option value="2">Default (~6s delay)</option>
                                     <option value="3">High latency (~10s delay)</option>
                                     <option value="4">Highest latency (most stable)</option>
                                 </select>
+                                <div class="form-help">Lower latency = more responsive but less stable</div>
                             </div>
                         </div>
-                        <div class="form-group">
-                            <label>
-                                <input type="checkbox" id="videoPassthrough">
-                                Video Passthrough (no re-encoding)
-                            </label>
-                            <div class="form-help">Bypasses encoding - use if OBS already encodes to target quality</div>
+
+                        <div style="margin-top: 1rem;">
+                            <button type="button" id="saveVideoSettings" class="btn btn-primary">Save Video Settings</button>
+                            <span id="video-settings-status" style="margin-left: 1rem;"></span>
                         </div>
-                        <button type="button" id="saveVideoSettings" class="btn btn-primary">Save Video Settings</button>
-                        <span id="video-settings-status" style="margin-left: 1rem;"></span>
                     </div>
                     <div id="video-settings-error" class="error-message" style="display: none;"></div>
                 </div>
@@ -423,15 +427,130 @@
     </script>
     {{if eq .Stream.ContainerStatus "running"}}
     <script>
-    // Video settings management
+    // Video settings management - Multiple Variants Support
     const videoSettingsLoading = document.getElementById('video-settings-loading');
     const videoSettingsForm = document.getElementById('video-settings-form');
     const videoSettingsError = document.getElementById('video-settings-error');
     const videoSettingsStatus = document.getElementById('video-settings-status');
+    const variantsBody = document.getElementById('variants-body');
 
+    // Quality presets
+    const QUALITY_PRESETS = {
+        '1080p': { name: '1080p', videoBitrate: 4500, framerate: 30, cpuUsageLevel: 3, videoPassthrough: false },
+        '720p':  { name: '720p',  videoBitrate: 2500, framerate: 30, cpuUsageLevel: 3, videoPassthrough: false },
+        '480p':  { name: '480p',  videoBitrate: 1200, framerate: 30, cpuUsageLevel: 2, videoPassthrough: false },
+        '360p':  { name: '360p',  videoBitrate: 800,  framerate: 30, cpuUsageLevel: 2, videoPassthrough: false },
+        'passthrough': { name: 'Source', videoBitrate: 0, framerate: 0, cpuUsageLevel: 1, videoPassthrough: true }
+    };
+
+    // Current variants array
+    let variants = [];
+
+    // Encoding speed options
+    const encodingSpeedOptions = [
+        { value: 1, label: 'Fastest' },
+        { value: 2, label: 'Fast' },
+        { value: 3, label: 'Balanced' },
+        { value: 4, label: 'Slow' },
+        { value: 5, label: 'Slowest' }
+    ];
+
+    // Add a preset
+    function addPreset(presetName) {
+        const preset = QUALITY_PRESETS[presetName];
+        if (!preset) return;
+
+        // Check for duplicate (by name)
+        const exists = variants.some(v => v.name === preset.name);
+        if (exists) {
+            alert(`${preset.name} variant already exists.`);
+            return;
+        }
+
+        variants.push({ ...preset, audioPassthrough: true });
+        renderVariantsTable();
+    }
+
+    // Remove a variant
+    function removeVariant(index) {
+        if (variants.length <= 1) {
+            alert('At least one variant is required.');
+            return;
+        }
+        if (confirm('Remove this variant?')) {
+            variants.splice(index, 1);
+            renderVariantsTable();
+        }
+    }
+
+    // Update a variant field
+    function updateVariant(index, field, value) {
+        if (variants[index]) {
+            if (field === 'videoPassthrough') {
+                variants[index][field] = value;
+            } else if (field === 'name') {
+                variants[index][field] = value;
+            } else {
+                variants[index][field] = parseInt(value) || 0;
+            }
+        }
+    }
+
+    // Render the variants table
+    function renderVariantsTable() {
+        if (variants.length === 0) {
+            variantsBody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-secondary);">No variants configured. Add a preset above.</td></tr>';
+            return;
+        }
+
+        variantsBody.innerHTML = variants.map((v, i) => `
+            <tr>
+                <td>
+                    <input type="text" class="variant-input" value="${v.name || ''}"
+                           onchange="updateVariant(${i}, 'name', this.value)" placeholder="Name">
+                </td>
+                <td>
+                    <input type="number" class="variant-input" value="${v.videoBitrate || 0}"
+                           onchange="updateVariant(${i}, 'videoBitrate', this.value)"
+                           min="0" max="20000" step="100" ${v.videoPassthrough ? 'disabled' : ''}>
+                </td>
+                <td>
+                    <input type="number" class="variant-input" value="${v.framerate || 0}"
+                           onchange="updateVariant(${i}, 'framerate', this.value)"
+                           min="0" max="120" step="1" ${v.videoPassthrough ? 'disabled' : ''}>
+                </td>
+                <td>
+                    <select class="variant-input" onchange="updateVariant(${i}, 'cpuUsageLevel', this.value)">
+                        ${encodingSpeedOptions.map(opt =>
+                            `<option value="${opt.value}" ${v.cpuUsageLevel === opt.value ? 'selected' : ''}>${opt.label}</option>`
+                        ).join('')}
+                    </select>
+                </td>
+                <td>
+                    <input type="checkbox" ${v.videoPassthrough ? 'checked' : ''}
+                           onchange="handlePassthroughChange(${i}, this.checked)">
+                </td>
+                <td>
+                    <button type="button" class="btn btn-danger btn-sm" onclick="removeVariant(${i})">Remove</button>
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    // Handle passthrough toggle (disables bitrate/fps when checked)
+    function handlePassthroughChange(index, checked) {
+        variants[index].videoPassthrough = checked;
+        if (checked) {
+            variants[index].videoBitrate = 0;
+            variants[index].framerate = 0;
+        }
+        renderVariantsTable();
+    }
+
+    // Load video settings from API
     async function loadVideoSettings(retryCount = 0) {
         const maxRetries = 5;
-        const retryDelay = 2000; // 2 seconds between retries
+        const retryDelay = 2000;
 
         try {
             const response = await fetch(`/admin/api/streams/${streamId}/owncast/settings`);
@@ -440,13 +559,22 @@
             }
             const data = await response.json();
 
+            // Load all variants
             if (data.videoSettings && data.videoSettings.videoQualityVariants && data.videoSettings.videoQualityVariants.length > 0) {
-                const variant = data.videoSettings.videoQualityVariants[0];
-                document.getElementById('videoBitrate').value = variant.videoBitrate || 1200;
-                document.getElementById('framerate').value = variant.framerate || 24;
-                document.getElementById('cpuUsageLevel').value = variant.cpuUsageLevel || 2;
-                document.getElementById('videoPassthrough').checked = variant.videoPassthrough || false;
+                variants = data.videoSettings.videoQualityVariants.map(v => ({
+                    name: v.name || '',
+                    videoBitrate: v.videoBitrate || 0,
+                    framerate: v.framerate || 0,
+                    cpuUsageLevel: v.cpuUsageLevel || 2,
+                    videoPassthrough: v.videoPassthrough || false,
+                    audioPassthrough: v.audioPassthrough !== false
+                }));
+            } else {
+                // Default to a single 720p variant if none configured
+                variants = [{ ...QUALITY_PRESETS['720p'], audioPassthrough: true }];
             }
+
+            renderVariantsTable();
 
             if (data.videoSettings && data.videoSettings.latencyLevel) {
                 document.getElementById('latencyLevel').value = data.videoSettings.latencyLevel;
@@ -467,30 +595,28 @@
         }
     }
 
+    // Save video settings
     document.getElementById('saveVideoSettings').addEventListener('click', async function() {
         const btn = this;
         btn.disabled = true;
         videoSettingsStatus.textContent = 'Saving...';
         videoSettingsStatus.style.color = '';
 
-        const videoBitrate = parseInt(document.getElementById('videoBitrate').value);
-        const framerate = parseFloat(document.getElementById('framerate').value);
-        const cpuUsageLevel = parseInt(document.getElementById('cpuUsageLevel').value);
+        if (variants.length === 0) {
+            videoSettingsStatus.textContent = 'At least one variant is required.';
+            videoSettingsStatus.style.color = 'var(--danger)';
+            btn.disabled = false;
+            return;
+        }
+
         const latencyLevel = parseInt(document.getElementById('latencyLevel').value);
-        const videoPassthrough = document.getElementById('videoPassthrough').checked;
 
         try {
             const response = await fetch(`/admin/api/streams/${streamId}/owncast/settings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    variants: [{
-                        videoBitrate: videoBitrate,
-                        framerate: framerate,
-                        cpuUsageLevel: cpuUsageLevel,
-                        videoPassthrough: videoPassthrough,
-                        audioPassthrough: true
-                    }],
+                    variants: variants,
                     latencyLevel: latencyLevel
                 })
             });
