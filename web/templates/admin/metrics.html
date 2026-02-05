@@ -204,7 +204,7 @@
                     <div class="container-stats">
                         CPU: ${c.cpuPercent.toFixed(1)}% |
                         Mem: ${c.memoryUsageMB.toFixed(0)} MB (${c.memoryPercent.toFixed(1)}%) |
-                        Net: ${c.networkRxMBps.toFixed(2)}/${c.networkTxMBps.toFixed(2)} MB/s
+                        Net: ${c.networkRxMbps.toFixed(1)}/${c.networkTxMbps.toFixed(1)} Mb/s
                     </div>
                 </div>
             </div>
@@ -273,7 +273,7 @@
             </div>
             <div class="metric-row">
                 <span class="metric-label">Network Rate</span>
-                <span class="metric-value">${server.networkRxMBps.toFixed(2)} MB/s rx / ${server.networkTxMBps.toFixed(2)} MB/s tx</span>
+                <span class="metric-value">${server.networkRxMbps.toFixed(1)} Mb/s rx / ${server.networkTxMbps.toFixed(1)} Mb/s tx</span>
             </div>
             <div class="metric-row">
                 <span class="metric-label">Network Total</span>

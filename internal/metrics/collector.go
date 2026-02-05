@@ -35,8 +35,8 @@ type ContainerMetrics struct {
 	MemoryPercent float64      `json:"memoryPercent"`
 	NetworkRxMB   float64      `json:"networkRxMB"`   // Cumulative
 	NetworkTxMB   float64      `json:"networkTxMB"`   // Cumulative
-	NetworkRxMBps float64      `json:"networkRxMBps"` // Rate per second
-	NetworkTxMBps float64      `json:"networkTxMBps"` // Rate per second
+	NetworkRxMbps float64      `json:"networkRxMbps"` // Rate in megabits per second
+	NetworkTxMbps float64      `json:"networkTxMbps"` // Rate in megabits per second
 	IsOwncast     bool         `json:"isOwncast"`
 	StreamSlug    string       `json:"streamSlug,omitempty"`
 }
@@ -229,8 +229,8 @@ func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMet
 			networkTx += netStats.TxBytes
 		}
 
-		// Calculate network rate (MB/s) using cached previous values
-		networkRxMBps, networkTxMBps := c.calculateNetworkRateWithCache(ctr.ID, networkRx, networkTx)
+		// Calculate network rate (Mb/s) using cached previous values
+		networkRxMbps, networkTxMbps := c.calculateNetworkRateWithCache(ctr.ID, networkRx, networkTx)
 
 		streamSlug := ""
 		if isOwncast {
@@ -267,8 +267,8 @@ func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMet
 			MemoryPercent: memoryPercent,
 			NetworkRxMB:   float64(networkRx) / (1024 * 1024),
 			NetworkTxMB:   float64(networkTx) / (1024 * 1024),
-			NetworkRxMBps: networkRxMBps,
-			NetworkTxMBps: networkTxMBps,
+			NetworkRxMbps: networkRxMbps,
+			NetworkTxMbps: networkTxMbps,
 			IsOwncast:     isOwncast,
 			StreamSlug:    streamSlug,
 		}
@@ -331,7 +331,7 @@ func (c *Collector) calculateCPUPercentWithCache(containerID string, stats *cont
 	return cpuPercent
 }
 
-// calculateNetworkRateWithCache calculates network rate (MB/s) using cached previous values
+// calculateNetworkRateWithCache calculates network rate (Mb/s) using cached previous values
 func (c *Collector) calculateNetworkRateWithCache(containerID string, rxBytes, txBytes uint64) (float64, float64) {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
@@ -368,11 +368,11 @@ func (c *Collector) calculateNetworkRateWithCache(containerID string, rxBytes, t
 		txDelta = txBytes - prev.txBytes
 	}
 
-	// Convert to MB/s
-	rxMBps := float64(rxDelta) / (1024 * 1024) / timeDelta
-	txMBps := float64(txDelta) / (1024 * 1024) / timeDelta
+	// Convert to Mb/s (megabits per second)
+	rxMbps := float64(rxDelta) * 8 / (1024 * 1024) / timeDelta
+	txMbps := float64(txDelta) * 8 / (1024 * 1024) / timeDelta
 
-	return rxMBps, txMBps
+	return rxMbps, txMbps
 }
 
 // collectRedisMetrics collects Redis server metrics
