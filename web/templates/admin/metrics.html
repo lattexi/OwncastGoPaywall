@@ -29,7 +29,7 @@
                 <h1>System Metrics</h1>
                 <div class="refresh-indicator">
                     <span class="refresh-dot"></span>
-                    <span>Auto-refresh: 5s</span>
+                    <span>Auto-refresh: 1s</span>
                 </div>
             </div>
 
@@ -114,15 +114,13 @@
                         </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Other Containers -->
-            <div class="admin-section">
-                <div class="section-header">
-                    <h2>Other Containers</h2>
-                </div>
-                <div id="other-containers" class="container-list">
-                    <div style="text-align: center; color: var(--text-secondary); padding: 1rem;">Loading...</div>
+                <!-- Server Container -->
+                <div class="metrics-card">
+                    <h3>Server (stream-paywall)</h3>
+                    <div id="server-container" class="metrics-card-content">
+                        <div style="text-align: center; color: var(--text-secondary);">Loading...</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -130,7 +128,7 @@
 
     <script>
     // Metrics refresh interval
-    const REFRESH_INTERVAL = 5000;
+    const REFRESH_INTERVAL = 1000;
 
     // Fetch and update metrics
     async function fetchMetrics() {
@@ -163,8 +161,8 @@
         // Update Go runtime metrics
         updateGoRuntimeMetrics(metrics.goRuntime);
 
-        // Update other containers
-        updateOtherContainers(metrics.otherContainers || []);
+        // Update server container
+        updateServerContainer(metrics.serverContainer);
     }
 
     // Update alerts section
@@ -205,7 +203,8 @@
                     <div class="container-name">${escapeHtml(c.name)}</div>
                     <div class="container-stats">
                         CPU: ${c.cpuPercent.toFixed(1)}% |
-                        Mem: ${c.memoryUsageMB.toFixed(0)} MB (${c.memoryPercent.toFixed(1)}%)
+                        Mem: ${c.memoryUsageMB.toFixed(0)} MB (${c.memoryPercent.toFixed(1)}%) |
+                        Net: ${c.networkRxMBps.toFixed(2)}/${c.networkTxMBps.toFixed(2)} MB/s
                     </div>
                 </div>
             </div>
@@ -254,28 +253,33 @@
         document.getElementById('go-gc').textContent = goRuntime.numGC;
     }
 
-    // Update other containers list
-    function updateOtherContainers(containers) {
-        const el = document.getElementById('other-containers');
+    // Update server container
+    function updateServerContainer(server) {
+        const el = document.getElementById('server-container');
 
-        if (containers.length === 0) {
-            el.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 1rem;">No other containers detected</div>';
+        if (!server) {
+            el.innerHTML = '<div style="text-align: center; color: var(--text-secondary);">Server container not detected</div>';
             return;
         }
 
-        el.innerHTML = containers.map(c => `
-            <div class="container-item">
-                <span class="container-status-dot ${c.status}"></span>
-                <div class="container-info">
-                    <div class="container-name">${escapeHtml(c.name)}</div>
-                    <div class="container-stats">
-                        CPU: ${c.cpuPercent.toFixed(1)}% |
-                        Mem: ${c.memoryUsageMB.toFixed(0)} MB |
-                        Net: ${c.networkRxMB.toFixed(1)} MB rx / ${c.networkTxMB.toFixed(1)} MB tx
-                    </div>
-                </div>
+        el.innerHTML = `
+            <div class="metric-row">
+                <span class="metric-label">CPU</span>
+                <span class="metric-value">${server.cpuPercent.toFixed(1)}%</span>
             </div>
-        `).join('');
+            <div class="metric-row">
+                <span class="metric-label">Memory</span>
+                <span class="metric-value">${server.memoryUsageMB.toFixed(0)} MB (${server.memoryPercent.toFixed(1)}%)</span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">Network Rate</span>
+                <span class="metric-value">${server.networkRxMBps.toFixed(2)} MB/s rx / ${server.networkTxMBps.toFixed(2)} MB/s tx</span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">Network Total</span>
+                <span class="metric-value">${server.networkRxMB.toFixed(1)} MB rx / ${server.networkTxMB.toFixed(1)} MB tx</span>
+            </div>
+        `;
     }
 
     // Get status class based on percentage

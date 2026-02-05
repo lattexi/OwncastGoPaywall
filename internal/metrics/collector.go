@@ -33,8 +33,10 @@ type ContainerMetrics struct {
 	MemoryUsageMB float64      `json:"memoryUsageMB"`
 	MemoryLimitMB float64      `json:"memoryLimitMB"`
 	MemoryPercent float64      `json:"memoryPercent"`
-	NetworkRxMB   float64      `json:"networkRxMB"`
-	NetworkTxMB   float64      `json:"networkTxMB"`
+	NetworkRxMB   float64      `json:"networkRxMB"`   // Cumulative
+	NetworkTxMB   float64      `json:"networkTxMB"`   // Cumulative
+	NetworkRxMBps float64      `json:"networkRxMBps"` // Rate per second
+	NetworkTxMBps float64      `json:"networkTxMBps"` // Rate per second
 	IsOwncast     bool         `json:"isOwncast"`
 	StreamSlug    string       `json:"streamSlug,omitempty"`
 }
@@ -78,7 +80,7 @@ type SystemMetrics struct {
 	Timestamp         time.Time          `json:"timestamp"`
 	OverallStatus     HealthStatus       `json:"overallStatus"`
 	OwncastContainers []ContainerMetrics `json:"owncastContainers"`
-	OtherContainers   []ContainerMetrics `json:"otherContainers"`
+	ServerContainer   *ContainerMetrics  `json:"serverContainer,omitempty"`
 	Redis             RedisMetrics       `json:"redis"`
 	Postgres          PostgresMetrics    `json:"postgres"`
 	GoRuntime         GoRuntimeMetrics   `json:"goRuntime"`
@@ -92,22 +94,31 @@ type cpuStatsCache struct {
 	timestamp   time.Time
 }
 
+// networkStatsCache stores previous network stats for rate calculation
+type networkStatsCache struct {
+	rxBytes   uint64
+	txBytes   uint64
+	timestamp time.Time
+}
+
 // Collector collects metrics from various sources
 type Collector struct {
-	dockerClient  *client.Client
-	redisClient   *redis.Client
-	pgPool        *pgxpool.Pool
-	cpuStatsCache map[string]*cpuStatsCache // container ID -> previous stats
-	cacheMu       sync.Mutex
+	dockerClient      *client.Client
+	redisClient       *redis.Client
+	pgPool            *pgxpool.Pool
+	cpuStatsCache     map[string]*cpuStatsCache     // container ID -> previous CPU stats
+	networkStatsCache map[string]*networkStatsCache // container ID -> previous network stats
+	cacheMu           sync.Mutex
 }
 
 // NewCollector creates a new metrics collector
 func NewCollector(dockerClient *client.Client, redisClient *redis.Client, pgPool *pgxpool.Pool) *Collector {
 	return &Collector{
-		dockerClient:  dockerClient,
-		redisClient:   redisClient,
-		pgPool:        pgPool,
-		cpuStatsCache: make(map[string]*cpuStatsCache),
+		dockerClient:      dockerClient,
+		redisClient:       redisClient,
+		pgPool:            pgPool,
+		cpuStatsCache:     make(map[string]*cpuStatsCache),
+		networkStatsCache: make(map[string]*networkStatsCache),
 	}
 }
 
@@ -121,9 +132,9 @@ func (c *Collector) Collect(ctx context.Context) (*SystemMetrics, error) {
 
 	// Collect container metrics
 	if c.dockerClient != nil {
-		owncast, other, containerAlerts := c.collectContainerMetrics(ctx)
+		owncast, server, containerAlerts := c.collectContainerMetrics(ctx)
 		metrics.OwncastContainers = owncast
-		metrics.OtherContainers = other
+		metrics.ServerContainer = server
 		metrics.Alerts = append(metrics.Alerts, containerAlerts...)
 	}
 
@@ -159,18 +170,33 @@ func (c *Collector) Collect(ctx context.Context) (*SystemMetrics, error) {
 }
 
 // collectContainerMetrics collects metrics from all Docker containers
-func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMetrics, []ContainerMetrics, []Alert) {
+func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMetrics, *ContainerMetrics, []Alert) {
 	var owncastContainers []ContainerMetrics
-	var otherContainers []ContainerMetrics
+	var serverContainer *ContainerMetrics
 	var alerts []Alert
 
 	containers, err := c.dockerClient.ContainerList(ctx, container.ListOptions{All: false})
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to list containers")
-		return owncastContainers, otherContainers, alerts
+		return owncastContainers, serverContainer, alerts
 	}
 
 	for _, ctr := range containers {
+		// Get container name first to filter
+		name := ctr.ID[:12]
+		if len(ctr.Names) > 0 {
+			name = strings.TrimPrefix(ctr.Names[0], "/")
+		}
+
+		// Check if it's an Owncast container or the stream-paywall server
+		isOwncast := strings.HasPrefix(name, "owncast-")
+		isServer := name == "stream-paywall"
+
+		// Skip containers that are neither Owncast nor the server
+		if !isOwncast && !isServer {
+			continue
+		}
+
 		// Get container stats
 		statsResp, err := c.dockerClient.ContainerStatsOneShot(ctx, ctr.ID)
 		if err != nil {
@@ -196,21 +222,16 @@ func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMet
 			memoryPercent = (memoryUsageMB / memoryLimitMB) * 100
 		}
 
-		// Calculate network I/O
+		// Calculate network I/O (cumulative)
 		var networkRx, networkTx uint64
 		for _, netStats := range stats.Networks {
 			networkRx += netStats.RxBytes
 			networkTx += netStats.TxBytes
 		}
 
-		// Get container name
-		name := ctr.ID[:12]
-		if len(ctr.Names) > 0 {
-			name = strings.TrimPrefix(ctr.Names[0], "/")
-		}
+		// Calculate network rate (MB/s) using cached previous values
+		networkRxMBps, networkTxMBps := c.calculateNetworkRateWithCache(ctr.ID, networkRx, networkTx)
 
-		// Check if it's an Owncast container
-		isOwncast := strings.HasPrefix(name, "owncast-")
 		streamSlug := ""
 		if isOwncast {
 			streamSlug = strings.TrimPrefix(name, "owncast-")
@@ -246,18 +267,20 @@ func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMet
 			MemoryPercent: memoryPercent,
 			NetworkRxMB:   float64(networkRx) / (1024 * 1024),
 			NetworkTxMB:   float64(networkTx) / (1024 * 1024),
+			NetworkRxMBps: networkRxMBps,
+			NetworkTxMBps: networkTxMBps,
 			IsOwncast:     isOwncast,
 			StreamSlug:    streamSlug,
 		}
 
 		if isOwncast {
 			owncastContainers = append(owncastContainers, containerMetric)
-		} else {
-			otherContainers = append(otherContainers, containerMetric)
+		} else if isServer {
+			serverContainer = &containerMetric
 		}
 	}
 
-	return owncastContainers, otherContainers, alerts
+	return owncastContainers, serverContainer, alerts
 }
 
 // calculateCPUPercentWithCache calculates CPU percentage using cached previous stats
@@ -306,6 +329,50 @@ func (c *Collector) calculateCPUPercentWithCache(containerID string, stats *cont
 	cpuPercent := (cpuDelta / systemDelta) * float64(numCPUs) * 100.0
 
 	return cpuPercent
+}
+
+// calculateNetworkRateWithCache calculates network rate (MB/s) using cached previous values
+func (c *Collector) calculateNetworkRateWithCache(containerID string, rxBytes, txBytes uint64) (float64, float64) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+
+	now := time.Now()
+
+	// Get cached previous stats
+	prev, hasPrev := c.networkStatsCache[containerID]
+
+	// Update cache with current stats
+	c.networkStatsCache[containerID] = &networkStatsCache{
+		rxBytes:   rxBytes,
+		txBytes:   txBytes,
+		timestamp: now,
+	}
+
+	// If no previous stats, we can't calculate rate yet
+	if !hasPrev || prev.timestamp.IsZero() {
+		return 0, 0
+	}
+
+	// Calculate time delta in seconds
+	timeDelta := now.Sub(prev.timestamp).Seconds()
+	if timeDelta <= 0 {
+		return 0, 0
+	}
+
+	// Calculate byte deltas (handle counter wrap gracefully)
+	var rxDelta, txDelta uint64
+	if rxBytes >= prev.rxBytes {
+		rxDelta = rxBytes - prev.rxBytes
+	}
+	if txBytes >= prev.txBytes {
+		txDelta = txBytes - prev.txBytes
+	}
+
+	// Convert to MB/s
+	rxMBps := float64(rxDelta) / (1024 * 1024) / timeDelta
+	txMBps := float64(txDelta) / (1024 * 1024) / timeDelta
+
+	return rxMBps, txMBps
 }
 
 // collectRedisMetrics collects Redis server metrics
