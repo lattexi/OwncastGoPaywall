@@ -39,15 +39,19 @@ type Config struct {
 	RecoveryRateLimitPerEmail int
 	RecoveryRateLimitPerIP    int
 
-	// Docker / Owncast Container Management
-	DockerHost           string // Docker socket path (e.g., unix:///var/run/docker.sock)
-	DockerNetwork        string // Docker network for containers (e.g., "internal")
-	OwncastImage         string // Owncast Docker image
-	RTMPPortStart        int    // Starting port for RTMP (e.g., 19350)
-	RTMPPublicHost       string // Public hostname for RTMP URLs (shown in admin)
-	OwncastAdminPassword string // Owncast admin password (default: "abc123")
-	OwncastCPULimit      int64  // CPU limit in cores (e.g., 4 = 4 cores)
-	OwncastMemoryLimit   int64  // Memory limit in MB (e.g., 4096 = 4GB)
+	// Docker
+	DockerHost    string // Docker socket path (e.g., unix:///var/run/docker.sock)
+	DockerNetwork string // Docker network for containers (e.g., "internal")
+
+	// RTMP
+	RTMPPortStart  int    // RTMP port (e.g., 19350) - single port for SRS
+	RTMPPublicHost string // Public hostname for RTMP URLs (shown in admin)
+
+	// SRS Streaming Server
+	SRSInternalURL      string // SRS HTTP server URL for HLS (default: http://srs:8080)
+	SRSAPIUrl           string // SRS management API URL (default: http://srs:1985)
+	SRSContainerName    string // SRS Docker container name (default: paywall-srs)
+	SRSConfigVolumePath string // Shared volume path for srs.conf (default: /shared/srs)
 }
 
 // Load reads configuration from environment variables
@@ -80,14 +84,18 @@ func Load() (*Config, error) {
 		RecoveryRateLimitPerIP:    20,
 
 		// Docker defaults
-		DockerHost:           getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
-		DockerNetwork:        getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
-		OwncastImage:         getEnv("OWNCAST_IMAGE", "owncast/owncast:latest"),
-		RTMPPortStart:        getEnvInt("RTMP_PORT_START", 19350),
-		RTMPPublicHost:       getEnv("RTMP_PUBLIC_HOST", "localhost"),
-		OwncastAdminPassword: getEnv("OWNCAST_ADMIN_PASSWORD", "abc123"),
-		OwncastCPULimit:      int64(getEnvInt("OWNCAST_CPU_LIMIT", 4)),      // 4 cores default
-		OwncastMemoryLimit:   int64(getEnvInt("OWNCAST_MEMORY_LIMIT", 4096)), // 4GB default
+		DockerHost:    getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
+		DockerNetwork: getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
+
+		// RTMP
+		RTMPPortStart:  getEnvInt("RTMP_PORT_START", 19350),
+		RTMPPublicHost: getEnv("RTMP_PUBLIC_HOST", "localhost"),
+
+		// SRS defaults
+		SRSInternalURL:      getEnv("SRS_INTERNAL_URL", "http://srs:8080"),
+		SRSAPIUrl:           getEnv("SRS_API_URL", "http://srs:1985"),
+		SRSContainerName:    getEnv("SRS_CONTAINER_NAME", "paywall-srs"),
+		SRSConfigVolumePath: getEnv("SRS_CONFIG_VOLUME_PATH", "/shared/srs"),
 	}
 
 	// Parse durations
@@ -144,21 +152,21 @@ func LoadWithDefaults() *Config {
 			SessionDuration:           24 * time.Hour,
 			HeartbeatTimeout:          45 * time.Second,
 			SignatureValidity:         24 * time.Hour,
-			DatabaseURL:               getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/paywall?sslmode=disable"),
-			RedisURL:                  getEnv("REDIS_URL", "redis://localhost:6379"),
-			AdminAPIKey:               "dev-admin-key",
-			AdminInitialUser:          getEnv("ADMIN_INITIAL_USER", "admin"),
-			AdminInitialPassword:      getEnv("ADMIN_INITIAL_PASSWORD", "admin"),
+			DatabaseURL:              getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/paywall?sslmode=disable"),
+			RedisURL:                 getEnv("REDIS_URL", "redis://localhost:6379"),
+			AdminAPIKey:              "dev-admin-key",
+			AdminInitialUser:         getEnv("ADMIN_INITIAL_USER", "admin"),
+			AdminInitialPassword:     getEnv("ADMIN_INITIAL_PASSWORD", "admin"),
 			RecoveryRateLimitPerEmail: 5,
 			RecoveryRateLimitPerIP:    20,
-			DockerHost:           getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
-			DockerNetwork:        getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
-			OwncastImage:         getEnv("OWNCAST_IMAGE", "owncast/owncast:latest"),
-			RTMPPortStart:        getEnvInt("RTMP_PORT_START", 19350),
-			RTMPPublicHost:       getEnv("RTMP_PUBLIC_HOST", "localhost"),
-			OwncastAdminPassword: getEnv("OWNCAST_ADMIN_PASSWORD", "abc123"),
-			OwncastCPULimit:      4,
-			OwncastMemoryLimit:   4096,
+			DockerHost:               getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
+			DockerNetwork:            getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
+			RTMPPortStart:            getEnvInt("RTMP_PORT_START", 19350),
+			RTMPPublicHost:           getEnv("RTMP_PUBLIC_HOST", "localhost"),
+			SRSInternalURL:           getEnv("SRS_INTERNAL_URL", "http://srs:8080"),
+			SRSAPIUrl:                getEnv("SRS_API_URL", "http://srs:1985"),
+			SRSContainerName:         getEnv("SRS_CONTAINER_NAME", "paywall-srs"),
+			SRSConfigVolumePath:      getEnv("SRS_CONFIG_VOLUME_PATH", "/shared/srs"),
 		}
 	}
 	return cfg

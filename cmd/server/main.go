@@ -14,6 +14,7 @@ import (
 	"github.com/laurikarhu/stream-paywall/internal/handlers"
 	"github.com/laurikarhu/stream-paywall/internal/metrics"
 	"github.com/laurikarhu/stream-paywall/internal/middleware"
+	"github.com/laurikarhu/stream-paywall/internal/srs"
 	"github.com/laurikarhu/stream-paywall/internal/storage"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -37,6 +38,7 @@ func main() {
 		Str("port", cfg.Port).
 		Str("base_url", cfg.BaseURL).
 		Str("rtmp_public_host", cfg.RTMPPublicHost).
+		Str("srs_container", cfg.SRSContainerName).
 		Msg("Starting stream paywall server")
 
 	// Create context for graceful shutdown
@@ -65,19 +67,31 @@ func main() {
 	// Initialize Docker manager (optional - may not be available in all environments)
 	var dockerMgr *docker.Manager
 	dockerMgr, err = docker.NewManager(&docker.Config{
-		DockerHost:    cfg.DockerHost,
-		NetworkName:   cfg.DockerNetwork,
-		OwncastImage:  cfg.OwncastImage,
-		RTMPPortStart: cfg.RTMPPortStart,
-		CPULimit:      cfg.OwncastCPULimit,
-		MemoryLimit:   cfg.OwncastMemoryLimit,
+		DockerHost:       cfg.DockerHost,
+		NetworkName:      cfg.DockerNetwork,
+		RTMPPortStart:    cfg.RTMPPortStart,
+		SRSContainerName: cfg.SRSContainerName,
 	})
 	if err != nil {
-		log.Warn().Err(err).Msg("Docker manager not available - container management disabled")
+		log.Warn().Err(err).Msg("Docker manager not available - container metrics disabled")
 		dockerMgr = nil
 	} else {
 		defer dockerMgr.Close()
 		log.Info().Msg("Docker manager initialized")
+	}
+
+	// Initialize SRS config generator
+	// callbackURL is how SRS reaches the Go server (internal Docker network)
+	callbackURL := "http://paywall:3000"
+	if os.Getenv("ENV") != "production" {
+		callbackURL = cfg.BaseURL
+	}
+
+	srsConfig := srs.NewConfigGenerator(cfg.SRSAPIUrl, cfg.SRSConfigVolumePath, callbackURL, pgStore)
+
+	// Generate initial SRS config
+	if err := srsConfig.GenerateAndReload(ctx); err != nil {
+		log.Warn().Err(err).Msg("Failed to generate initial SRS config (SRS may not be running)")
 	}
 
 	// Initialize handlers
@@ -97,21 +111,22 @@ func main() {
 	adminAPIMiddleware := middleware.NewAdminMiddleware(cfg)
 	adminSessionMiddleware := middleware.NewAdminSessionMiddleware(pgStore, redisStore)
 
-	// Initialize admin page handler
-	adminPageHandler, err := handlers.NewAdminPageHandler(cfg, pgStore, redisStore, templateDir, adminSessionMiddleware, dockerMgr)
+	// Initialize admin page handler (with SRS config instead of Docker manager)
+	adminPageHandler, err := handlers.NewAdminPageHandler(cfg, pgStore, redisStore, templateDir, adminSessionMiddleware, srsConfig)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize admin page handler")
 	}
 
-	// Initialize Owncast proxy handler
-	owncastProxyHandler := handlers.NewOwncastProxyHandler(cfg, pgStore, redisStore, adminSessionMiddleware)
+	// Initialize SRS handlers
+	srsHooksHandler := handlers.NewSRSHooksHandler(pgStore)
+	srsSettingsHandler := handlers.NewSRSSettingsHandler(cfg, pgStore, srsConfig, adminSessionMiddleware)
 
 	// Initialize metrics collector and handler
 	var metricsCollector *metrics.Collector
 	if dockerMgr != nil {
-		metricsCollector = metrics.NewCollector(dockerMgr.GetClient(), redisStore.GetClient(), pgStore.GetPool())
+		metricsCollector = metrics.NewCollector(dockerMgr.GetClient(), redisStore.GetClient(), pgStore.GetPool(), cfg.SRSContainerName)
 	} else {
-		metricsCollector = metrics.NewCollector(nil, redisStore.GetClient(), pgStore.GetPool())
+		metricsCollector = metrics.NewCollector(nil, redisStore.GetClient(), pgStore.GetPool(), cfg.SRSContainerName)
 	}
 	metricsHandler := handlers.NewMetricsHandler(metricsCollector)
 
@@ -129,7 +144,6 @@ func main() {
 	staticDir := findStaticDir()
 	fs := http.FileServer(http.Dir(staticDir))
 	cachedFS := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Cache static assets for 1 week (CSS, JS, images are versioned or rarely change)
 		w.Header().Set("Cache-Control", "public, max-age=604800, immutable")
 		http.StripPrefix("/static/", fs).ServeHTTP(w, r)
 	})
@@ -144,6 +158,10 @@ func main() {
 	mux.HandleFunc("GET /api/callback/cancel", paymentHandler.HandleCancelCallback)
 	mux.HandleFunc("POST /api/stream/{id}/heartbeat", streamHandler.Heartbeat)
 	mux.HandleFunc("GET /api/stream/{slug}/playlist", streamHandler.GetPlaylistURL)
+
+	// SRS webhook endpoints (called by SRS, no auth needed - internal network only)
+	mux.HandleFunc("POST /api/hooks/on_publish", srsHooksHandler.OnPublish)
+	mux.HandleFunc("POST /api/hooks/on_unpublish", srsHooksHandler.OnUnpublish)
 
 	// HLS proxy (protected by signed URLs)
 	mux.HandleFunc("GET /stream/{id}/hls/{path...}", streamHandler.ServeHLS)
@@ -178,13 +196,9 @@ func main() {
 	mux.Handle("POST /admin/streams/{id}/delete", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.DeleteStream)))
 	mux.Handle("GET /admin/streams/{id}/payments", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.StreamPayments)))
 
-	// Container management routes
-	mux.Handle("POST /admin/streams/{id}/container/start", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.StartContainer)))
-	mux.Handle("POST /admin/streams/{id}/container/stop", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.StopContainer)))
-
-	// Owncast API routes (for managing Owncast container settings)
-	mux.Handle("GET /admin/api/streams/{id}/owncast/settings", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(owncastProxyHandler.GetVideoSettings)))
-	mux.Handle("POST /admin/api/streams/{id}/owncast/settings", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(owncastProxyHandler.UpdateVideoSettings)))
+	// SRS settings routes (replaces Owncast settings)
+	mux.Handle("GET /admin/api/streams/{id}/srs/settings", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(srsSettingsHandler.GetVideoSettings)))
+	mux.Handle("POST /admin/api/streams/{id}/srs/settings", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(srsSettingsHandler.UpdateVideoSettings)))
 
 	// Admin API for AJAX requests (protected by session)
 	mux.Handle("GET /admin/api/streams/{id}/viewers", adminSessionMiddleware.RequireAdminSession(http.HandlerFunc(adminPageHandler.GetViewerCountAPI)))
@@ -268,7 +282,6 @@ func createInitialAdminUser(ctx context.Context, cfg *config.Config, pgStore *st
 
 // findTemplateDir finds the templates directory
 func findTemplateDir() string {
-	// Try relative paths from different working directories
 	paths := []string{
 		"web/templates",
 		"../../web/templates",
@@ -282,7 +295,6 @@ func findTemplateDir() string {
 		}
 	}
 
-	// Default
 	return "web/templates"
 }
 

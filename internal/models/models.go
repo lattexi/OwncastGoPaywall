@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,7 +16,7 @@ const (
 	StreamStatusEnded     StreamStatus = "ended"
 )
 
-// ContainerStatus represents the status of an Owncast container
+// ContainerStatus represents the status of a container (kept for backward compat)
 type ContainerStatus string
 
 const (
@@ -25,6 +26,18 @@ const (
 	ContainerStatusStopping ContainerStatus = "stopping"
 	ContainerStatusError    ContainerStatus = "error"
 )
+
+// TranscodeVariant represents a single transcode quality variant for SRS/FFmpeg
+type TranscodeVariant struct {
+	Name        string `json:"name"`
+	VBitrate    int    `json:"vbitrate"`              // Video bitrate in kbps
+	VWidth      int    `json:"vwidth,omitempty"`       // Video width (e.g., 1920)
+	VHeight     int    `json:"vheight,omitempty"`      // Video height (e.g., 1080)
+	VFps        int    `json:"vfps,omitempty"`         // Video FPS
+	VPreset     string `json:"vpreset,omitempty"`      // FFmpeg preset (ultrafast, faster, medium, slow, veryslow)
+	ABitrate    int    `json:"abitrate,omitempty"`     // Audio bitrate in kbps
+	Passthrough bool   `json:"passthrough,omitempty"`  // If true, pass through without transcoding
+}
 
 // Stream represents a paywall-protected video stream
 type Stream struct {
@@ -36,20 +49,36 @@ type Stream struct {
 	StartTime   *time.Time   `json:"start_time,omitempty"`
 	EndTime     *time.Time   `json:"end_time,omitempty"`
 	Status      StreamStatus `json:"status"`
-	OwncastURL  string       `json:"-"` // Never expose to clients (auto-generated)
+	OwncastURL  string       `json:"-"` // Legacy - kept for backward compat
 	MaxViewers  int          `json:"max_viewers,omitempty"` // 0 = unlimited
 	CreatedAt   time.Time    `json:"created_at"`
 
-	// Dynamic Owncast container fields
+	// Container fields (legacy - ContainerStatus defaults to "stopped")
 	StreamKey       string          `json:"-"`                  // OBS stream key (never expose)
-	RTMPPort        int             `json:"rtmp_port"`          // Assigned RTMP port
-	ContainerName   string          `json:"-"`                  // Docker container name
-	ContainerStatus ContainerStatus `json:"container_status"`   // Container state
+	RTMPPort        int             `json:"rtmp_port"`          // RTMP port (shared across all streams)
+	ContainerName   string          `json:"-"`                  // Legacy container name
+	ContainerStatus ContainerStatus `json:"container_status"`   // Legacy - defaults to "stopped"
+
+	// SRS fields
+	IsPublishing    bool            `json:"is_publishing"`      // Whether OBS is currently publishing
+	TranscodeConfig json.RawMessage `json:"-"`                  // JSONB transcode config
 }
 
 // PriceEuros returns the price formatted in euros
 func (s *Stream) PriceEuros() float64 {
 	return float64(s.PriceCents) / 100
+}
+
+// GetTranscodeVariants parses the transcode config into variant structs
+func (s *Stream) GetTranscodeVariants() ([]TranscodeVariant, error) {
+	if len(s.TranscodeConfig) == 0 || string(s.TranscodeConfig) == "[]" || string(s.TranscodeConfig) == "null" {
+		return nil, nil
+	}
+	var variants []TranscodeVariant
+	if err := json.Unmarshal(s.TranscodeConfig, &variants); err != nil {
+		return nil, err
+	}
+	return variants, nil
 }
 
 // PaymentStatus represents the state of a payment
@@ -114,7 +143,6 @@ type CreateStreamRequest struct {
 	StartTime   *time.Time `json:"start_time,omitempty"`
 	EndTime     *time.Time `json:"end_time,omitempty"`
 	MaxViewers  int        `json:"max_viewers,omitempty"`
-	// Note: OwncastURL, StreamKey, RTMPPort, ContainerName are auto-generated
 }
 
 // UpdateStreamRequest is the request body for updating a stream

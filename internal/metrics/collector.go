@@ -35,8 +35,7 @@ type ContainerMetrics struct {
 	MemoryPercent float64      `json:"memoryPercent"`
 	NetworkRxMB   float64      `json:"networkRxMB"`
 	NetworkTxMB   float64      `json:"networkTxMB"`
-	IsOwncast     bool         `json:"isOwncast"`
-	StreamSlug    string       `json:"streamSlug,omitempty"`
+	IsSRS         bool         `json:"isSRS"`
 }
 
 // RedisMetrics represents Redis server metrics
@@ -75,14 +74,14 @@ type Alert struct {
 
 // SystemMetrics represents all collected system metrics
 type SystemMetrics struct {
-	Timestamp         time.Time          `json:"timestamp"`
-	OverallStatus     HealthStatus       `json:"overallStatus"`
-	OwncastContainers []ContainerMetrics `json:"owncastContainers"`
-	OtherContainers   []ContainerMetrics `json:"otherContainers"`
-	Redis             RedisMetrics       `json:"redis"`
-	Postgres          PostgresMetrics    `json:"postgres"`
-	GoRuntime         GoRuntimeMetrics   `json:"goRuntime"`
-	Alerts            []Alert            `json:"alerts"`
+	Timestamp       time.Time          `json:"timestamp"`
+	OverallStatus   HealthStatus       `json:"overallStatus"`
+	SRSContainers   []ContainerMetrics `json:"srsContainers"`
+	OtherContainers []ContainerMetrics `json:"otherContainers"`
+	Redis           RedisMetrics       `json:"redis"`
+	Postgres        PostgresMetrics    `json:"postgres"`
+	GoRuntime       GoRuntimeMetrics   `json:"goRuntime"`
+	Alerts          []Alert            `json:"alerts"`
 }
 
 // cpuStatsCache stores previous CPU stats for delta calculation
@@ -94,20 +93,22 @@ type cpuStatsCache struct {
 
 // Collector collects metrics from various sources
 type Collector struct {
-	dockerClient  *client.Client
-	redisClient   *redis.Client
-	pgPool        *pgxpool.Pool
-	cpuStatsCache map[string]*cpuStatsCache // container ID -> previous stats
-	cacheMu       sync.Mutex
+	dockerClient     *client.Client
+	redisClient      *redis.Client
+	pgPool           *pgxpool.Pool
+	srsContainerName string
+	cpuStatsCache    map[string]*cpuStatsCache // container ID -> previous stats
+	cacheMu          sync.Mutex
 }
 
 // NewCollector creates a new metrics collector
-func NewCollector(dockerClient *client.Client, redisClient *redis.Client, pgPool *pgxpool.Pool) *Collector {
+func NewCollector(dockerClient *client.Client, redisClient *redis.Client, pgPool *pgxpool.Pool, srsContainerName string) *Collector {
 	return &Collector{
-		dockerClient:  dockerClient,
-		redisClient:   redisClient,
-		pgPool:        pgPool,
-		cpuStatsCache: make(map[string]*cpuStatsCache),
+		dockerClient:     dockerClient,
+		redisClient:      redisClient,
+		pgPool:           pgPool,
+		srsContainerName: srsContainerName,
+		cpuStatsCache:    make(map[string]*cpuStatsCache),
 	}
 }
 
@@ -121,8 +122,8 @@ func (c *Collector) Collect(ctx context.Context) (*SystemMetrics, error) {
 
 	// Collect container metrics
 	if c.dockerClient != nil {
-		owncast, other, containerAlerts := c.collectContainerMetrics(ctx)
-		metrics.OwncastContainers = owncast
+		srsContainers, other, containerAlerts := c.collectContainerMetrics(ctx)
+		metrics.SRSContainers = srsContainers
 		metrics.OtherContainers = other
 		metrics.Alerts = append(metrics.Alerts, containerAlerts...)
 	}
@@ -160,14 +161,14 @@ func (c *Collector) Collect(ctx context.Context) (*SystemMetrics, error) {
 
 // collectContainerMetrics collects metrics from all Docker containers
 func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMetrics, []ContainerMetrics, []Alert) {
-	var owncastContainers []ContainerMetrics
+	var srsContainers []ContainerMetrics
 	var otherContainers []ContainerMetrics
 	var alerts []Alert
 
 	containers, err := c.dockerClient.ContainerList(ctx, container.ListOptions{All: false})
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to list containers")
-		return owncastContainers, otherContainers, alerts
+		return srsContainers, otherContainers, alerts
 	}
 
 	for _, ctr := range containers {
@@ -209,16 +210,12 @@ func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMet
 			name = strings.TrimPrefix(ctr.Names[0], "/")
 		}
 
-		// Check if it's an Owncast container
-		isOwncast := strings.HasPrefix(name, "owncast-")
-		streamSlug := ""
-		if isOwncast {
-			streamSlug = strings.TrimPrefix(name, "owncast-")
-		}
+		// Check if it's the SRS container
+		isSRS := name == c.srsContainerName
 
 		// Determine health status
 		status := HealthStatusHealthy
-		if isOwncast {
+		if isSRS {
 			if cpuPercent > 90 {
 				status = HealthStatusCritical
 				alerts = append(alerts, Alert{
@@ -246,22 +243,20 @@ func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMet
 			MemoryPercent: memoryPercent,
 			NetworkRxMB:   float64(networkRx) / (1024 * 1024),
 			NetworkTxMB:   float64(networkTx) / (1024 * 1024),
-			IsOwncast:     isOwncast,
-			StreamSlug:    streamSlug,
+			IsSRS:         isSRS,
 		}
 
-		if isOwncast {
-			owncastContainers = append(owncastContainers, containerMetric)
+		if isSRS {
+			srsContainers = append(srsContainers, containerMetric)
 		} else {
 			otherContainers = append(otherContainers, containerMetric)
 		}
 	}
 
-	return owncastContainers, otherContainers, alerts
+	return srsContainers, otherContainers, alerts
 }
 
 // calculateCPUPercentWithCache calculates CPU percentage using cached previous stats
-// This is needed because ContainerStatsOneShot doesn't always provide PreCPUStats
 func (c *Collector) calculateCPUPercentWithCache(containerID string, stats *container.StatsResponse) float64 {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()

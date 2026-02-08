@@ -17,15 +17,17 @@ CREATE TABLE IF NOT EXISTS streams (
     start_time TIMESTAMPTZ,
     end_time TIMESTAMPTZ,
     status VARCHAR(20) NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'live', 'ended')),
-    owncast_url VARCHAR(500),  -- Auto-generated based on container
+    owncast_url VARCHAR(500),  -- Legacy, unused with SRS
     max_viewers INTEGER DEFAULT 0 CHECK (max_viewers >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    
-    -- Dynamic Owncast container fields
+
+    -- Streaming fields (SRS shared container)
     stream_key VARCHAR(64),                    -- Auto-generated OBS stream key
-    rtmp_port INTEGER UNIQUE,                  -- Assigned RTMP port (19350+)
-    container_name VARCHAR(100) UNIQUE,        -- Docker container name
+    rtmp_port INTEGER DEFAULT 19350,           -- Shared RTMP port (all streams use 19350)
+    container_name VARCHAR(100),               -- Legacy, unused with SRS
     container_status VARCHAR(20) DEFAULT 'stopped' CHECK (container_status IN ('stopped', 'starting', 'running', 'stopping', 'error')),
+    is_publishing BOOLEAN DEFAULT false,       -- Set by SRS on_publish/on_unpublish webhooks
+    transcode_config JSONB DEFAULT '[]'::jsonb, -- Transcoding variants for SRS/FFmpeg
     
     -- Constraints
     CONSTRAINT valid_time_range CHECK (end_time IS NULL OR start_time IS NULL OR end_time > start_time)
@@ -34,17 +36,16 @@ CREATE TABLE IF NOT EXISTS streams (
 CREATE INDEX IF NOT EXISTS idx_streams_slug ON streams(slug);
 CREATE INDEX IF NOT EXISTS idx_streams_status ON streams(status);
 CREATE INDEX IF NOT EXISTS idx_streams_start_time ON streams(start_time);
-CREATE INDEX IF NOT EXISTS idx_streams_rtmp_port ON streams(rtmp_port);
+CREATE INDEX IF NOT EXISTS idx_streams_stream_key ON streams(stream_key);
 
 COMMENT ON TABLE streams IS 'Paywall-protected video streams';
 COMMENT ON COLUMN streams.slug IS 'URL-friendly unique identifier';
 COMMENT ON COLUMN streams.price_cents IS 'Price in cents (990 = 9.90€)';
-COMMENT ON COLUMN streams.owncast_url IS 'Internal Owncast URL - auto-generated from container name';
 COMMENT ON COLUMN streams.max_viewers IS '0 means unlimited viewers';
 COMMENT ON COLUMN streams.stream_key IS 'Auto-generated stream key for OBS';
-COMMENT ON COLUMN streams.rtmp_port IS 'Assigned RTMP port for this stream (19350+)';
-COMMENT ON COLUMN streams.container_name IS 'Docker container name for this stream';
-COMMENT ON COLUMN streams.container_status IS 'Current status of the Owncast container';
+COMMENT ON COLUMN streams.rtmp_port IS 'Shared RTMP port (all streams use 19350)';
+COMMENT ON COLUMN streams.is_publishing IS 'Whether OBS is currently publishing to SRS';
+COMMENT ON COLUMN streams.transcode_config IS 'JSON array of transcoding variants for SRS/FFmpeg';
 
 -- ============================================
 -- PAYMENTS TABLE

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -55,9 +56,10 @@ func (s *PostgresStore) GetPool() *pgxpool.Pool {
 // --- Stream Operations ---
 
 // streamColumns is the list of columns for stream queries
-const streamColumns = `id, slug, title, description, price_cents, start_time, end_time, status, 
-	COALESCE(owncast_url, ''), max_viewers, created_at, 
-	COALESCE(stream_key, ''), COALESCE(rtmp_port, 0), COALESCE(container_name, ''), COALESCE(container_status, 'stopped')`
+const streamColumns = `id, slug, title, description, price_cents, start_time, end_time, status,
+	COALESCE(owncast_url, ''), max_viewers, created_at,
+	COALESCE(stream_key, ''), COALESCE(rtmp_port, 0), COALESCE(container_name, ''), COALESCE(container_status, 'stopped'),
+	COALESCE(is_publishing, false), COALESCE(transcode_config, '[]'::jsonb)`
 
 // scanStream scans a row into a Stream struct
 func scanStream(row pgx.Row) (*models.Stream, error) {
@@ -78,6 +80,8 @@ func scanStream(row pgx.Row) (*models.Stream, error) {
 		&stream.RTMPPort,
 		&stream.ContainerName,
 		&stream.ContainerStatus,
+		&stream.IsPublishing,
+		&stream.TranscodeConfig,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -88,12 +92,50 @@ func scanStream(row pgx.Row) (*models.Stream, error) {
 	return stream, nil
 }
 
+// scanStreamRows scans multiple rows into Stream structs
+func scanStreamRows(rows pgx.Rows) ([]*models.Stream, error) {
+	var streams []*models.Stream
+	for rows.Next() {
+		stream := &models.Stream{}
+		err := rows.Scan(
+			&stream.ID,
+			&stream.Slug,
+			&stream.Title,
+			&stream.Description,
+			&stream.PriceCents,
+			&stream.StartTime,
+			&stream.EndTime,
+			&stream.Status,
+			&stream.OwncastURL,
+			&stream.MaxViewers,
+			&stream.CreatedAt,
+			&stream.StreamKey,
+			&stream.RTMPPort,
+			&stream.ContainerName,
+			&stream.ContainerStatus,
+			&stream.IsPublishing,
+			&stream.TranscodeConfig,
+		)
+		if err != nil {
+			return nil, err
+		}
+		streams = append(streams, stream)
+	}
+	return streams, rows.Err()
+}
+
 // CreateStream creates a new stream
 func (s *PostgresStore) CreateStream(ctx context.Context, stream *models.Stream) error {
+	transcodeConfig := stream.TranscodeConfig
+	if len(transcodeConfig) == 0 {
+		transcodeConfig = json.RawMessage("[]")
+	}
+
 	query := `
-		INSERT INTO streams (id, slug, title, description, price_cents, start_time, end_time, status, 
-			owncast_url, max_viewers, created_at, stream_key, rtmp_port, container_name, container_status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		INSERT INTO streams (id, slug, title, description, price_cents, start_time, end_time, status,
+			owncast_url, max_viewers, created_at, stream_key, rtmp_port, container_name, container_status,
+			is_publishing, transcode_config)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 	`
 	_, err := s.pool.Exec(ctx, query,
 		stream.ID,
@@ -111,6 +153,8 @@ func (s *PostgresStore) CreateStream(ctx context.Context, stream *models.Stream)
 		stream.RTMPPort,
 		stream.ContainerName,
 		stream.ContainerStatus,
+		stream.IsPublishing,
+		transcodeConfig,
 	)
 	return err
 }
@@ -127,6 +171,12 @@ func (s *PostgresStore) GetStreamBySlug(ctx context.Context, slug string) (*mode
 	return scanStream(s.pool.QueryRow(ctx, query, slug))
 }
 
+// GetStreamByStreamKey retrieves a stream by its stream key (for SRS webhook validation)
+func (s *PostgresStore) GetStreamByStreamKey(ctx context.Context, streamKey string) (*models.Stream, error) {
+	query := fmt.Sprintf("SELECT %s FROM streams WHERE stream_key = $1", streamColumns)
+	return scanStream(s.pool.QueryRow(ctx, query, streamKey))
+}
+
 // ListStreams retrieves all streams
 func (s *PostgresStore) ListStreams(ctx context.Context) ([]*models.Stream, error) {
 	query := fmt.Sprintf("SELECT %s FROM streams ORDER BY created_at DESC", streamColumns)
@@ -135,38 +185,12 @@ func (s *PostgresStore) ListStreams(ctx context.Context) ([]*models.Stream, erro
 		return nil, err
 	}
 	defer rows.Close()
-
-	var streams []*models.Stream
-	for rows.Next() {
-		stream := &models.Stream{}
-		err := rows.Scan(
-			&stream.ID,
-			&stream.Slug,
-			&stream.Title,
-			&stream.Description,
-			&stream.PriceCents,
-			&stream.StartTime,
-			&stream.EndTime,
-			&stream.Status,
-			&stream.OwncastURL,
-			&stream.MaxViewers,
-			&stream.CreatedAt,
-			&stream.StreamKey,
-			&stream.RTMPPort,
-			&stream.ContainerName,
-			&stream.ContainerStatus,
-		)
-		if err != nil {
-			return nil, err
-		}
-		streams = append(streams, stream)
-	}
-	return streams, rows.Err()
+	return scanStreamRows(rows)
 }
 
 // ListActiveStreams retrieves streams that are scheduled or live
 func (s *PostgresStore) ListActiveStreams(ctx context.Context) ([]*models.Stream, error) {
-	query := fmt.Sprintf(`SELECT %s FROM streams 
+	query := fmt.Sprintf(`SELECT %s FROM streams
 		WHERE status IN ('scheduled', 'live')
 		ORDER BY start_time ASC NULLS LAST, created_at DESC`, streamColumns)
 	rows, err := s.pool.Query(ctx, query)
@@ -174,33 +198,7 @@ func (s *PostgresStore) ListActiveStreams(ctx context.Context) ([]*models.Stream
 		return nil, err
 	}
 	defer rows.Close()
-
-	var streams []*models.Stream
-	for rows.Next() {
-		stream := &models.Stream{}
-		err := rows.Scan(
-			&stream.ID,
-			&stream.Slug,
-			&stream.Title,
-			&stream.Description,
-			&stream.PriceCents,
-			&stream.StartTime,
-			&stream.EndTime,
-			&stream.Status,
-			&stream.OwncastURL,
-			&stream.MaxViewers,
-			&stream.CreatedAt,
-			&stream.StreamKey,
-			&stream.RTMPPort,
-			&stream.ContainerName,
-			&stream.ContainerStatus,
-		)
-		if err != nil {
-			return nil, err
-		}
-		streams = append(streams, stream)
-	}
-	return streams, rows.Err()
+	return scanStreamRows(rows)
 }
 
 // UpdateStream updates a stream
@@ -278,40 +276,25 @@ func (s *PostgresStore) UpdateContainerStatus(ctx context.Context, id uuid.UUID,
 	return err
 }
 
+// UpdateStreamPublishing updates the is_publishing flag for a stream by stream key
+func (s *PostgresStore) UpdateStreamPublishing(ctx context.Context, streamKey string, isPublishing bool) error {
+	query := "UPDATE streams SET is_publishing = $1 WHERE stream_key = $2"
+	_, err := s.pool.Exec(ctx, query, isPublishing, streamKey)
+	return err
+}
+
+// UpdateTranscodeConfig updates the transcode configuration for a stream
+func (s *PostgresStore) UpdateTranscodeConfig(ctx context.Context, id uuid.UUID, config json.RawMessage) error {
+	query := "UPDATE streams SET transcode_config = $1 WHERE id = $2"
+	_, err := s.pool.Exec(ctx, query, config, id)
+	return err
+}
+
 // DeleteStream deletes a stream
 func (s *PostgresStore) DeleteStream(ctx context.Context, id uuid.UUID) error {
 	query := "DELETE FROM streams WHERE id = $1"
 	_, err := s.pool.Exec(ctx, query, id)
 	return err
-}
-
-// GetNextAvailablePort finds the next available RTMP port starting from the given base
-func (s *PostgresStore) GetNextAvailablePort(ctx context.Context, basePort int) (int, error) {
-	// Get all used ports
-	query := "SELECT rtmp_port FROM streams WHERE rtmp_port IS NOT NULL ORDER BY rtmp_port"
-	rows, err := s.pool.Query(ctx, query)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-
-	usedPorts := make(map[int]bool)
-	for rows.Next() {
-		var port int
-		if err := rows.Scan(&port); err != nil {
-			return 0, err
-		}
-		usedPorts[port] = true
-	}
-
-	// Find first available port
-	for port := basePort; port < basePort+100; port++ {
-		if !usedPorts[port] {
-			return port, nil
-		}
-	}
-
-	return 0, fmt.Errorf("no available ports in range %d-%d", basePort, basePort+100)
 }
 
 // --- Payment Operations ---
@@ -347,8 +330,8 @@ func (s *PostgresStore) CreatePayment(ctx context.Context, payment *models.Payme
 // GetPaymentByID retrieves a payment by its ID
 func (s *PostgresStore) GetPaymentByID(ctx context.Context, id uuid.UUID) (*models.Payment, error) {
 	query := `
-		SELECT id, stream_id, email, amount_cents, status, 
-			COALESCE(paytrail_ref, ''), COALESCE(paytrail_transaction_id, ''), 
+		SELECT id, stream_id, email, amount_cents, status,
+			COALESCE(paytrail_ref, ''), COALESCE(paytrail_transaction_id, ''),
 			COALESCE(access_token, ''), token_expiry, created_at
 		FROM payments WHERE id = $1
 	`
@@ -377,8 +360,8 @@ func (s *PostgresStore) GetPaymentByID(ctx context.Context, id uuid.UUID) (*mode
 // GetPaymentByPaytrailRef retrieves a payment by Paytrail reference (stamp)
 func (s *PostgresStore) GetPaymentByPaytrailRef(ctx context.Context, ref string) (*models.Payment, error) {
 	query := `
-		SELECT id, stream_id, email, amount_cents, status, 
-			COALESCE(paytrail_ref, ''), COALESCE(paytrail_transaction_id, ''), 
+		SELECT id, stream_id, email, amount_cents, status,
+			COALESCE(paytrail_ref, ''), COALESCE(paytrail_transaction_id, ''),
 			COALESCE(access_token, ''), token_expiry, created_at
 		FROM payments WHERE paytrail_ref = $1
 	`
@@ -407,8 +390,8 @@ func (s *PostgresStore) GetPaymentByPaytrailRef(ctx context.Context, ref string)
 // GetPaymentByAccessToken retrieves a payment by access token
 func (s *PostgresStore) GetPaymentByAccessToken(ctx context.Context, token string) (*models.Payment, error) {
 	query := `
-		SELECT id, stream_id, email, amount_cents, status, 
-			COALESCE(paytrail_ref, ''), COALESCE(paytrail_transaction_id, ''), 
+		SELECT id, stream_id, email, amount_cents, status,
+			COALESCE(paytrail_ref, ''), COALESCE(paytrail_transaction_id, ''),
 			COALESCE(access_token, ''), token_expiry, created_at
 		FROM payments WHERE access_token = $1
 	`
@@ -437,10 +420,10 @@ func (s *PostgresStore) GetPaymentByAccessToken(ctx context.Context, token strin
 // GetCompletedPaymentByEmailAndStream retrieves a completed payment for recovery
 func (s *PostgresStore) GetCompletedPaymentByEmailAndStream(ctx context.Context, email string, streamID uuid.UUID) (*models.Payment, error) {
 	query := `
-		SELECT id, stream_id, email, amount_cents, status, 
-			COALESCE(paytrail_ref, ''), COALESCE(paytrail_transaction_id, ''), 
+		SELECT id, stream_id, email, amount_cents, status,
+			COALESCE(paytrail_ref, ''), COALESCE(paytrail_transaction_id, ''),
 			COALESCE(access_token, ''), token_expiry, created_at
-		FROM payments 
+		FROM payments
 		WHERE email = $1 AND stream_id = $2 AND status = 'completed'
 		ORDER BY created_at DESC
 		LIMIT 1
@@ -494,10 +477,10 @@ func (s *PostgresStore) UpdatePaymentAccessToken(ctx context.Context, id uuid.UU
 // ListPaymentsByStream retrieves all payments for a stream
 func (s *PostgresStore) ListPaymentsByStream(ctx context.Context, streamID uuid.UUID) ([]*models.Payment, error) {
 	query := `
-		SELECT id, stream_id, email, amount_cents, status, 
-			COALESCE(paytrail_ref, ''), COALESCE(paytrail_transaction_id, ''), 
+		SELECT id, stream_id, email, amount_cents, status,
+			COALESCE(paytrail_ref, ''), COALESCE(paytrail_transaction_id, ''),
 			COALESCE(access_token, ''), token_expiry, created_at
-		FROM payments 
+		FROM payments
 		WHERE stream_id = $1
 		ORDER BY created_at DESC
 	`

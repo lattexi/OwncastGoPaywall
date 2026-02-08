@@ -6,7 +6,6 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
-      # Note: RTMP ports (19350-19399) are exposed directly by dynamic Owncast containers
     environment:
       - ENV=production
       - BASE_URL=${BASE_URL:-http://localhost:3000}
@@ -22,21 +21,27 @@ services:
       - SESSION_DURATION=${SESSION_DURATION:-24h}
       - HEARTBEAT_TIMEOUT=${HEARTBEAT_TIMEOUT:-45s}
       - SIGNATURE_VALIDITY=${SIGNATURE_VALIDITY:-24h}
-      # Docker management configuration
-      - OWNCAST_CPU_LIMIT=${OWNCAST_CPU_LIMIT:-4}
-      - OWNCAST_MEMORY_LIMIT=${OWNCAST_MEMORY_LIMIT:-4096}
+      # Docker management configuration (for metrics)
       - DOCKER_HOST=unix:///var/run/docker.sock
       - DOCKER_NETWORK=owncastgopaywall_internal
-      - OWNCAST_IMAGE=${OWNCAST_IMAGE:-owncast/owncast:latest}
       - RTMP_PORT_START=${RTMP_PORT_START:-19350}
       - RTMP_PUBLIC_HOST=${RTMP_PUBLIC_HOST:-localhost}
+      # SRS configuration
+      - SRS_INTERNAL_URL=http://srs:8080
+      - SRS_API_URL=http://srs:1985
+      - SRS_CONTAINER_NAME=paywall-srs
+      - SRS_CONFIG_VOLUME_PATH=/shared/srs
     volumes:
-      # Mount Docker socket for container management
+      # Mount Docker socket for container metrics
       - /var/run/docker.sock:/var/run/docker.sock
+      # Shared volume to write SRS config
+      - srs-config:/shared/srs:rw
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      srs:
         condition: service_healthy
     networks:
       - public
@@ -56,8 +61,24 @@ services:
       retries: 3
       start_period: 10s
 
-  # Note: Owncast containers are now created dynamically by the paywall server
-  # Each stream gets its own isolated Owncast instance with a unique RTMP port
+  # SRS Streaming Server - Single shared instance for all streams
+  srs:
+    image: ossrs/srs:5
+    container_name: paywall-srs
+    restart: unless-stopped
+    ports:
+      - "${RTMP_PORT_START:-19350}:1935"
+    volumes:
+      - srs-config:/etc/srs:rw
+      - ./srs/srs.seed.conf:/seed/srs.seed.conf:ro
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/1985'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    entrypoint: ["/bin/sh", "-c", "if [ ! -f /etc/srs/srs.conf ]; then cp /seed/srs.seed.conf /etc/srs/srs.conf; fi && exec objs/srs -c /etc/srs/srs.conf"]
 
   # PostgreSQL - Internal only
   postgres:
@@ -100,14 +121,12 @@ networks:
   public:
     driver: bridge
 
-  # Internal network - for internal services and dynamic Owncast containers
-  # Note: Dynamic Owncast containers join this network for HLS proxying
-  # but expose RTMP ports directly on the host for OBS connections
+  # Internal network - for internal services
+  # SRS, PostgreSQL, Redis communicate with paywall server here
   internal:
     driver: bridge
-    # Removed internal: true so dynamic containers can be managed properly
-    # Security is maintained by not exposing HLS ports - only RTMP for streaming input
 
 volumes:
   postgres-data:
   redis-data:
+  srs-config:

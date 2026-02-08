@@ -12,22 +12,23 @@ import (
 	"github.com/laurikarhu/stream-paywall/internal/docker"
 	"github.com/laurikarhu/stream-paywall/internal/middleware"
 	"github.com/laurikarhu/stream-paywall/internal/models"
+	"github.com/laurikarhu/stream-paywall/internal/srs"
 	"github.com/laurikarhu/stream-paywall/internal/storage"
 	"github.com/rs/zerolog/log"
 )
 
 // AdminPageHandler handles admin page rendering
 type AdminPageHandler struct {
-	cfg         *config.Config
-	pgStore     *storage.PostgresStore
-	redis       *storage.RedisStore
-	templates   *template.Template
-	sessionMw   *middleware.AdminSessionMiddleware
-	dockerMgr   *docker.Manager
+	cfg       *config.Config
+	pgStore   *storage.PostgresStore
+	redis     *storage.RedisStore
+	templates *template.Template
+	sessionMw *middleware.AdminSessionMiddleware
+	srsConfig *srs.ConfigGenerator
 }
 
 // NewAdminPageHandler creates a new admin page handler
-func NewAdminPageHandler(cfg *config.Config, pgStore *storage.PostgresStore, redis *storage.RedisStore, templateDir string, sessionMw *middleware.AdminSessionMiddleware, dockerMgr *docker.Manager) (*AdminPageHandler, error) {
+func NewAdminPageHandler(cfg *config.Config, pgStore *storage.PostgresStore, redis *storage.RedisStore, templateDir string, sessionMw *middleware.AdminSessionMiddleware, srsConfig *srs.ConfigGenerator) (*AdminPageHandler, error) {
 	// Parse admin templates
 	templates, err := template.ParseGlob(templateDir + "/admin/*.html")
 	if err != nil {
@@ -40,7 +41,7 @@ func NewAdminPageHandler(cfg *config.Config, pgStore *storage.PostgresStore, red
 		redis:     redis,
 		templates: templates,
 		sessionMw: sessionMw,
-		dockerMgr: dockerMgr,
+		srsConfig: srsConfig,
 	}, nil
 }
 
@@ -153,10 +154,10 @@ func (h *AdminPageHandler) renderLoginError(w http.ResponseWriter, errorMsg, use
 
 // DashboardStats contains dashboard statistics
 type DashboardStats struct {
-	TotalStreams       int
-	ActiveViewers      int64
-	TotalRevenueEuros  float64
-	CompletedPayments  int
+	TotalStreams      int
+	ActiveViewers     int64
+	TotalRevenueEuros float64
+	CompletedPayments int
 }
 
 // PaymentWithStream represents a payment with stream title
@@ -174,14 +175,14 @@ func (h *AdminPageHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	// Get streams (needed for live streams list and viewer count)
 	streams, _ := h.pgStore.ListStreams(ctx)
 
-	// Get aggregated payment stats in ONE query (fixes N+1 problem)
+	// Get aggregated payment stats in ONE query
 	paymentStats, err := h.pgStore.GetPaymentStatsAggregate(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get payment stats")
 		paymentStats = &storage.PaymentStats{}
 	}
 
-	// Get recent payments with stream titles in ONE query (fixes N+1 problem)
+	// Get recent payments with stream titles in ONE query
 	recentPaymentsList, streamTitles, err := h.pgStore.GetRecentCompletedPayments(ctx, 10)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get recent payments")
@@ -211,7 +212,7 @@ func (h *AdminPageHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	data := struct {
 		AdminBaseData
 		Stats          DashboardStats
-		LiveStreams    []*models.Stream
+		LiveStreams     []*models.Stream
 		RecentPayments []PaymentWithStream
 	}{
 		AdminBaseData: AdminBaseData{
@@ -227,7 +228,7 @@ func (h *AdminPageHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
 			TotalRevenueEuros: float64(paymentStats.TotalRevenueCents) / 100,
 			CompletedPayments: paymentStats.CompletedPayments,
 		},
-		LiveStreams:    liveStreams,
+		LiveStreams:     liveStreams,
 		RecentPayments: recentPayments,
 	}
 
@@ -362,7 +363,7 @@ func (h *AdminPageHandler) CreateStream(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Generate container-related fields
+	// Generate stream key
 	streamKey, err := docker.GenerateStreamKey()
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to generate stream key")
@@ -370,15 +371,8 @@ func (h *AdminPageHandler) CreateStream(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	rtmpPort, err := h.pgStore.GetNextAvailablePort(ctx, h.cfg.RTMPPortStart)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to allocate RTMP port")
-		h.renderStreamFormError(w, session, nil, false, "Failed to allocate RTMP port.")
-		return
-	}
-
-	containerName := docker.ContainerName(slug)
-	owncastURL := docker.GetInternalURL(containerName)
+	// All streams use the single SRS RTMP port
+	rtmpPort := h.cfg.RTMPPortStart
 
 	// Create stream
 	stream := &models.Stream{
@@ -390,13 +384,12 @@ func (h *AdminPageHandler) CreateStream(w http.ResponseWriter, r *http.Request) 
 		StartTime:       startTime,
 		EndTime:         endTime,
 		Status:          models.StreamStatusScheduled,
-		OwncastURL:      owncastURL,
 		MaxViewers:      maxViewers,
 		CreatedAt:       time.Now(),
 		StreamKey:       streamKey,
 		RTMPPort:        rtmpPort,
-		ContainerName:   containerName,
 		ContainerStatus: models.ContainerStatusStopped,
+		IsPublishing:    false,
 	}
 
 	if err := h.pgStore.CreateStream(ctx, stream); err != nil {
@@ -405,9 +398,15 @@ func (h *AdminPageHandler) CreateStream(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Regenerate SRS config to include webhook validation for new stream key
+	if h.srsConfig != nil {
+		if err := h.srsConfig.GenerateAndReload(ctx); err != nil {
+			log.Warn().Err(err).Msg("Failed to reload SRS config after stream creation")
+		}
+	}
+
 	log.Info().
 		Str("slug", slug).
-		Str("container", containerName).
 		Int("rtmp_port", rtmpPort).
 		Str("admin", session.Username).
 		Msg("Stream created")
@@ -527,7 +526,6 @@ func (h *AdminPageHandler) UpdateStream(w http.ResponseWriter, r *http.Request) 
 		status = stream.Status
 	}
 
-	// Update (note: owncast_url, stream_key, rtmp_port, container_name are immutable)
 	updates := &models.UpdateStreamRequest{
 		Title:       &title,
 		Description: &description,
@@ -591,120 +589,19 @@ func (h *AdminPageHandler) DeleteStream(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Get stream to find container name
-	stream, _ := h.pgStore.GetStreamByID(ctx, id)
-
-	// Remove container and volume if they exist
-	if stream != nil && stream.Slug != "" && h.dockerMgr != nil {
-		if err := h.dockerMgr.RemoveContainer(ctx, stream.Slug); err != nil {
-			log.Warn().Err(err).Str("slug", stream.Slug).Msg("Failed to remove container")
-		}
-	}
-
 	if err := h.pgStore.DeleteStream(ctx, id); err != nil {
 		log.Error().Err(err).Msg("Failed to delete stream")
 	} else {
 		log.Info().Str("id", id.String()).Str("admin", session.Username).Msg("Stream deleted")
 	}
 
-	http.Redirect(w, r, "/admin/streams", http.StatusFound)
-}
-
-// StartContainer starts the Owncast container for a stream
-func (h *AdminPageHandler) StartContainer(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	session := middleware.GetAdminSession(ctx)
-
-	idStr := r.PathValue("id")
-	id, err := uuid.Parse(idStr)
-	if err != nil {
-		http.Redirect(w, r, "/admin/streams", http.StatusFound)
-		return
-	}
-
-	stream, err := h.pgStore.GetStreamByID(ctx, id)
-	if err != nil || stream == nil {
-		http.Redirect(w, r, "/admin/streams", http.StatusFound)
-		return
-	}
-
-	// Update status to starting
-	h.pgStore.UpdateContainerStatus(ctx, id, models.ContainerStatusStarting)
-
-	// Start container
-	if h.dockerMgr != nil {
-		err = h.dockerMgr.CreateAndStartContainer(ctx, stream.Slug, stream.StreamKey, stream.RTMPPort)
-		if err != nil {
-			log.Error().Err(err).Str("slug", stream.Slug).Msg("Failed to start container")
-			h.pgStore.UpdateContainerStatus(ctx, id, models.ContainerStatusError)
-		} else {
-			log.Info().
-				Str("slug", stream.Slug).
-				Str("container", stream.ContainerName).
-				Int("rtmp_port", stream.RTMPPort).
-				Str("admin", session.Username).
-				Msg("Container started")
-			h.pgStore.UpdateContainerStatus(ctx, id, models.ContainerStatusRunning)
+	// Regenerate SRS config after stream deletion
+	if h.srsConfig != nil {
+		if err := h.srsConfig.GenerateAndReload(ctx); err != nil {
+			log.Warn().Err(err).Msg("Failed to reload SRS config after stream deletion")
 		}
-	} else {
-		log.Warn().Msg("Docker manager not available")
-		h.pgStore.UpdateContainerStatus(ctx, id, models.ContainerStatusError)
 	}
 
-	// Redirect back
-	referer := r.Header.Get("Referer")
-	if referer != "" {
-		http.Redirect(w, r, referer, http.StatusFound)
-		return
-	}
-	http.Redirect(w, r, "/admin/streams", http.StatusFound)
-}
-
-// StopContainer stops the Owncast container for a stream
-func (h *AdminPageHandler) StopContainer(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	session := middleware.GetAdminSession(ctx)
-
-	idStr := r.PathValue("id")
-	id, err := uuid.Parse(idStr)
-	if err != nil {
-		http.Redirect(w, r, "/admin/streams", http.StatusFound)
-		return
-	}
-
-	stream, err := h.pgStore.GetStreamByID(ctx, id)
-	if err != nil || stream == nil {
-		http.Redirect(w, r, "/admin/streams", http.StatusFound)
-		return
-	}
-
-	// Update status to stopping
-	h.pgStore.UpdateContainerStatus(ctx, id, models.ContainerStatusStopping)
-
-	// Stop container
-	if h.dockerMgr != nil {
-		err = h.dockerMgr.StopContainer(ctx, stream.ContainerName)
-		if err != nil {
-			log.Error().Err(err).Str("container", stream.ContainerName).Msg("Failed to stop container")
-			h.pgStore.UpdateContainerStatus(ctx, id, models.ContainerStatusError)
-		} else {
-			log.Info().
-				Str("slug", stream.Slug).
-				Str("container", stream.ContainerName).
-				Str("admin", session.Username).
-				Msg("Container stopped")
-			h.pgStore.UpdateContainerStatus(ctx, id, models.ContainerStatusStopped)
-		}
-	} else {
-		h.pgStore.UpdateContainerStatus(ctx, id, models.ContainerStatusStopped)
-	}
-
-	// Redirect back
-	referer := r.Header.Get("Referer")
-	if referer != "" {
-		http.Redirect(w, r, referer, http.StatusFound)
-		return
-	}
 	http.Redirect(w, r, "/admin/streams", http.StatusFound)
 }
 

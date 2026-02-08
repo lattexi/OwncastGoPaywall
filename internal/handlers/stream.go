@@ -51,9 +51,9 @@ type StreamHandler struct {
 	sessionManager *security.SessionManager
 	client         *http.Client
 	streamCache    sync.Map            // uuid.UUID -> *streamCacheEntry
-	playlistCache  sync.Map            // string (owncastURL) -> *playlistCacheEntry
+	playlistCache  sync.Map            // string (srsURL) -> *playlistCacheEntry
 	rewrittenCache sync.Map            // string (streamID:token:hlsPath) -> *playlistCacheEntry
-	segmentCache   sync.Map            // string (owncastURL) -> *segmentCacheEntry
+	segmentCache   sync.Map            // string (srsURL) -> *segmentCacheEntry
 	playlistFlight singleflight.Group  // deduplicates concurrent playlist fetches
 	segmentFlight  singleflight.Group  // deduplicates concurrent segment fetches
 }
@@ -67,11 +67,11 @@ func NewStreamHandler(cfg *config.Config, pgStore *storage.PostgresStore, redis 
 		sessionManager: security.NewSessionManager(redis, cfg.SessionDuration, cfg.HeartbeatTimeout),
 		client: &http.Client{
 			Transport: &http.Transport{
-				MaxIdleConns:        1000,            // Increased for high viewer counts
-				MaxIdleConnsPerHost: 100,             // Per Owncast container
-				MaxConnsPerHost:     0,               // No limit
+				MaxIdleConns:        1000,
+				MaxIdleConnsPerHost: 100,
+				MaxConnsPerHost:     0,
 				IdleConnTimeout:     90 * time.Second,
-				DisableCompression:  true,            // Video segments are already compressed
+				DisableCompression:  true,
 			},
 			Timeout: 30 * time.Second,
 		},
@@ -109,26 +109,26 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 	// Extract stream ID and HLS path from URL
 	// URL format: /stream/{streamID}/hls/{hlsPath}
 	path := r.URL.Path
-	
+
 	// Parse: /stream/{streamID}/hls/{...}
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	if len(parts) < 4 {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
-	
+
 	streamID := parts[1]
 	hlsPath := strings.Join(parts[3:], "/") // Everything after /hls/
-	
+
 	ctx := r.Context()
-	
+
 	// Parse stream UUID
 	streamUUID, err := uuid.Parse(streamID)
 	if err != nil {
 		http.Error(w, "Invalid stream ID", http.StatusBadRequest)
 		return
 	}
-	
+
 	// Get stream from cache (or DB on cache miss)
 	stream, err := h.getStreamCached(ctx, streamUUID)
 	if err != nil {
@@ -158,8 +158,6 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 	isPlaylist := strings.HasSuffix(hlsPath, ".m3u8")
 
 	// For playlist requests, validate session in Redis (fast, real-time validation)
-	// Segments don't need validation - they're useless without a valid playlist,
-	// and the playlist request already validated the session.
 	if isPlaylist {
 		session, err := h.redis.GetSession(ctx, token)
 		if err != nil || session == nil {
@@ -178,27 +176,35 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build internal Owncast URL
-	owncastURL := strings.TrimSuffix(stream.OwncastURL, "/") + "/hls/" + hlsPath
+	// Check if this is a master playlist request (stream.m3u8)
+	if isPlaylist && hlsPath == "stream.m3u8" {
+		h.serveMasterPlaylist(w, r, stream, token)
+		return
+	}
+
+	// Strip "live/" prefix from hlsPath if present - SRS playlists use absolute
+	// paths like "/live/{streamKey}.m3u8" which after rewrite become "live/{streamKey}.m3u8"
+	hlsPath = strings.TrimPrefix(hlsPath, "live/")
+
+	// Build internal SRS URL
+	srsURL := strings.TrimSuffix(h.cfg.SRSInternalURL, "/") + "/live/" + hlsPath
 
 	if isPlaylist {
-		h.servePlaylist(w, r, stream, owncastURL, token, hlsPath)
+		h.servePlaylist(w, r, stream, srsURL, token, hlsPath)
 	} else {
-		h.serveSegment(w, r, owncastURL)
+		h.serveSegment(w, r, srsURL)
 	}
 }
 
-// servePlaylist fetches and rewrites an HLS playlist
-func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, stream *models.Stream, owncastURL, token string, hlsPath string) {
+// serveMasterPlaylist generates a master playlist listing source + transcoded variants
+func (h *StreamHandler) serveMasterPlaylist(w http.ResponseWriter, r *http.Request, stream *models.Stream, token string) {
 	streamID := stream.ID.String()
 
-	// Check rewritten playlist cache first (per-token cache)
-	// This avoids re-running the rewrite for the same user's repeated requests
-	rewrittenKey := streamID + ":" + token + ":" + hlsPath
+	// Check rewritten cache
+	rewrittenKey := streamID + ":" + token + ":stream.m3u8"
 	if entry, ok := h.rewrittenCache.Load(rewrittenKey); ok {
 		e := entry.(*playlistCacheEntry)
 		if time.Now().Before(e.expiresAt) {
-			// Cache hit - serve directly
 			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			w.Write([]byte(e.content))
@@ -207,91 +213,221 @@ func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, st
 		h.rewrittenCache.Delete(rewrittenKey)
 	}
 
-	// Determine the base directory for this playlist (for relative URL resolution)
-	baseDir := ""
-	if idx := strings.LastIndex(hlsPath, "/"); idx > 0 {
-		baseDir = hlsPath[:idx+1] // Include trailing slash
+	playlist := h.generateMasterPlaylist(stream, token)
+
+	// Cache for 4 seconds
+	h.rewrittenCache.Store(rewrittenKey, &playlistCacheEntry{
+		content:   playlist,
+		expiresAt: time.Now().Add(1 * time.Second),
+	})
+
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Write([]byte(playlist))
+}
+
+// generateMasterPlaylist creates an HLS master playlist with variants
+func (h *StreamHandler) generateMasterPlaylist(stream *models.Stream, token string) string {
+	streamID := stream.ID.String()
+	streamKey := stream.StreamKey
+
+	variants, err := stream.GetTranscodeVariants()
+	if err != nil {
+		log.Warn().Err(err).Str("stream", stream.Slug).Msg("Failed to parse transcode config for master playlist")
+		variants = nil
 	}
 
-	// Try to get original playlist from cache (reduces load on Owncast for concurrent viewers)
-	var originalPlaylist string
-	if entry, ok := h.playlistCache.Load(owncastURL); ok {
+	var b strings.Builder
+	b.WriteString("#EXTM3U\n")
+
+	hasPassthrough := false
+	hasTranscoded := false
+
+	for _, v := range variants {
+		if v.Passthrough {
+			hasPassthrough = true
+		} else {
+			hasTranscoded = true
+		}
+	}
+
+	// If there are transcoded variants, list them in the master playlist
+	if hasTranscoded {
+		for _, v := range variants {
+			if v.Passthrough {
+				continue
+			}
+
+			bandwidth := v.VBitrate * 1000 // kbps to bps
+			resolution := ""
+			if v.VWidth > 0 && v.VHeight > 0 {
+				resolution = fmt.Sprintf(",RESOLUTION=%dx%d", v.VWidth, v.VHeight)
+			}
+			fps := ""
+			if v.VFps > 0 {
+				fps = fmt.Sprintf(",FRAME-RATE=%d", v.VFps)
+			}
+
+			suffix := strings.ToLower(v.Name)
+			variantPlaylist := fmt.Sprintf("%s_%s.m3u8", streamKey, suffix)
+
+			b.WriteString(fmt.Sprintf("#EXT-X-STREAM-INF:BANDWIDTH=%d%s%s,NAME=\"%s\"\n", bandwidth, resolution, fps, v.Name))
+			b.WriteString(fmt.Sprintf("/stream/%s/hls/%s?token=%s\n", streamID, variantPlaylist, token))
+		}
+	}
+
+	// Always include source/passthrough stream
+	if hasPassthrough || !hasTranscoded {
+		// Source stream - estimate higher bandwidth
+		sourceBandwidth := 6000000 // 6 Mbps default for source
+		b.WriteString(fmt.Sprintf("#EXT-X-STREAM-INF:BANDWIDTH=%d,NAME=\"Source\"\n", sourceBandwidth))
+		b.WriteString(fmt.Sprintf("/stream/%s/hls/%s.m3u8?token=%s\n", streamID, streamKey, token))
+	}
+
+	return b.String()
+}
+
+// servePlaylist fetches and rewrites an HLS playlist
+func (h *StreamHandler) servePlaylist(w http.ResponseWriter, r *http.Request, stream *models.Stream, srsURL, token string, hlsPath string) {
+	streamID := stream.ID.String()
+
+	// Check rewritten playlist cache first (per-token cache)
+	rewrittenKey := streamID + ":" + token + ":" + hlsPath
+	if entry, ok := h.rewrittenCache.Load(rewrittenKey); ok {
 		e := entry.(*playlistCacheEntry)
 		if time.Now().Before(e.expiresAt) {
-			originalPlaylist = e.content
-		} else {
-			h.playlistCache.Delete(owncastURL)
-		}
-	}
-
-	// If not in cache, fetch from Owncast using singleflight to deduplicate concurrent requests
-	if originalPlaylist == "" {
-		result, err, _ := h.playlistFlight.Do(owncastURL, func() (interface{}, error) {
-			// Double-check cache (another goroutine might have populated it)
-			if entry, ok := h.playlistCache.Load(owncastURL); ok {
-				e := entry.(*playlistCacheEntry)
-				if time.Now().Before(e.expiresAt) {
-					return e.content, nil
-				}
-			}
-
-			resp, err := h.client.Get(owncastURL)
-			if err != nil {
-				return nil, err
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK {
-				return nil, fmt.Errorf("owncast returned status %d", resp.StatusCode)
-			}
-
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return nil, err
-			}
-			content := string(body)
-
-			// Cache for 4 seconds (HLS segments are typically 2-6 seconds)
-			h.playlistCache.Store(owncastURL, &playlistCacheEntry{
-				content:   content,
-				expiresAt: time.Now().Add(4 * time.Second),
-			})
-
-			return content, nil
-		})
-
-		if err != nil {
-			log.Error().Err(err).Str("url", owncastURL).Msg("Failed to fetch playlist")
-			http.Error(w, "Failed to fetch stream", http.StatusBadGateway)
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Write([]byte(e.content))
 			return
 		}
-		originalPlaylist = result.(string)
+		h.rewrittenCache.Delete(rewrittenKey)
+	}
+
+	originalPlaylist, err := h.fetchPlaylistFromSRS(srsURL)
+	if err != nil {
+		log.Error().Err(err).Str("url", srsURL).Msg("Failed to fetch playlist")
+		http.Error(w, "Failed to fetch stream", http.StatusBadGateway)
+		return
 	}
 
 	// Rewrite playlist with token URLs
-	rewritten, err := h.rewritePlaylist(strings.NewReader(originalPlaylist), streamID, token, baseDir)
+	rewritten, err := h.rewritePlaylist(strings.NewReader(originalPlaylist), streamID, token)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to rewrite playlist")
 		http.Error(w, "Failed to process stream", http.StatusInternalServerError)
 		return
 	}
 
-	// Cache the rewritten playlist for this token (reduces rewrite operations)
+	// Cache the rewritten playlist
 	h.rewrittenCache.Store(rewrittenKey, &playlistCacheEntry{
 		content:   rewritten,
-		expiresAt: time.Now().Add(4 * time.Second),
+		expiresAt: time.Now().Add(1 * time.Second),
 	})
 
-	// Set headers
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-
 	w.Write([]byte(rewritten))
 }
 
+// fetchPlaylistFromSRS fetches a playlist from SRS, following its hls_ctx redirect pattern.
+// SRS returns a master playlist on first request, pointing to the real media playlist
+// with a ?hls_ctx= param. This method follows that pattern transparently.
+func (h *StreamHandler) fetchPlaylistFromSRS(srsURL string) (string, error) {
+	// Try cache first
+	if entry, ok := h.playlistCache.Load(srsURL); ok {
+		e := entry.(*playlistCacheEntry)
+		if time.Now().Before(e.expiresAt) {
+			return e.content, nil
+		}
+		h.playlistCache.Delete(srsURL)
+	}
+
+	result, err, _ := h.playlistFlight.Do(srsURL, func() (interface{}, error) {
+		// Double-check cache
+		if entry, ok := h.playlistCache.Load(srsURL); ok {
+			e := entry.(*playlistCacheEntry)
+			if time.Now().Before(e.expiresAt) {
+				return e.content, nil
+			}
+		}
+
+		content, err := h.doFetchSRS(srsURL)
+		if err != nil {
+			return nil, err
+		}
+
+		// SRS returns a master playlist on first request with hls_ctx redirect.
+		// Detect this and follow it to get the actual media playlist.
+		if strings.Contains(content, "#EXT-X-STREAM-INF") && strings.Contains(content, "hls_ctx=") {
+			// Extract the real URL from the SRS master playlist
+			realURL := h.extractSRSMediaURL(content)
+			if realURL != "" {
+				mediaContent, err := h.doFetchSRS(realURL)
+				if err != nil {
+					return nil, err
+				}
+				content = mediaContent
+				// Cache with the original URL so subsequent requests hit cache
+			}
+		}
+
+		h.playlistCache.Store(srsURL, &playlistCacheEntry{
+			content:   content,
+			expiresAt: time.Now().Add(4 * time.Second),
+		})
+
+		return content, nil
+	})
+
+	if err != nil {
+		return "", err
+	}
+	return result.(string), nil
+}
+
+// doFetchSRS performs a single HTTP GET to SRS and returns the body
+func (h *StreamHandler) doFetchSRS(url string) (string, error) {
+	resp, err := h.client.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("SRS returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+// extractSRSMediaURL parses the SRS master playlist to find the actual media playlist URL
+func (h *StreamHandler) extractSRSMediaURL(content string) string {
+	srsBase := strings.TrimSuffix(h.cfg.SRSInternalURL, "/")
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// SRS returns absolute paths like /live/{streamKey}.m3u8?hls_ctx=xxx
+		if strings.HasPrefix(line, "/") {
+			return srsBase + line
+		}
+		// Or possibly relative
+		if strings.HasSuffix(line, ".m3u8") || strings.Contains(line, ".m3u8?") {
+			return srsBase + "/" + line
+		}
+	}
+	return ""
+}
+
 // rewritePlaylist rewrites all URLs in an HLS playlist to point to our proxy
-// baseDir is the directory prefix for relative URLs (e.g., "0/" for variant playlists)
-func (h *StreamHandler) rewritePlaylist(body io.Reader, streamID, token, baseDir string) (string, error) {
+func (h *StreamHandler) rewritePlaylist(body io.Reader, streamID, token string) (string, error) {
 	var result strings.Builder
 	scanner := bufio.NewScanner(body)
 
@@ -300,20 +436,18 @@ func (h *StreamHandler) rewritePlaylist(body io.Reader, streamID, token, baseDir
 
 		// Check if this line is a URL (segment or nested playlist)
 		if hlsURLRegex.MatchString(line) {
-			// Extract the filename/path
 			originalPath := line
-			
-			// Remove any existing query params
+
+			// Remove any existing query params (like SRS hls_ctx)
 			if idx := strings.Index(originalPath, "?"); idx != -1 {
 				originalPath = originalPath[:idx]
 			}
-			
-			// Handle relative paths - prepend the base directory
-			if !strings.HasPrefix(originalPath, "/") && !strings.HasPrefix(originalPath, "http") {
-				originalPath = baseDir + originalPath
-			}
-			
-			// Build the proxy URL with token (no signature needed - validated via Redis)
+
+			// Strip leading /live/ prefix (SRS absolute paths)
+			originalPath = strings.TrimPrefix(originalPath, "/live/")
+			originalPath = strings.TrimPrefix(originalPath, "/")
+
+			// Build the proxy URL with token
 			proxyPath := "/stream/" + streamID + "/hls/" + originalPath + "?token=" + token
 
 			result.WriteString(proxyPath)
@@ -322,52 +456,48 @@ func (h *StreamHandler) rewritePlaylist(body io.Reader, streamID, token, baseDir
 		}
 		result.WriteString("\n")
 	}
-	
+
 	if err := scanner.Err(); err != nil {
 		return "", err
 	}
-	
+
 	return result.String(), nil
 }
 
-// serveSegment proxies a video segment from Owncast with server-side caching
-func (h *StreamHandler) serveSegment(w http.ResponseWriter, r *http.Request, owncastURL string) {
-	// Try to get segment from cache (reduces load on Owncast for concurrent viewers)
-	if entry, ok := h.segmentCache.Load(owncastURL); ok {
+// serveSegment proxies a video segment from SRS with server-side caching
+func (h *StreamHandler) serveSegment(w http.ResponseWriter, r *http.Request, srsURL string) {
+	// Try to get segment from cache
+	if entry, ok := h.segmentCache.Load(srsURL); ok {
 		e := entry.(*segmentCacheEntry)
 		if time.Now().Before(e.expiresAt) {
-			// Cache hit - serve from memory
 			w.Header().Set("Content-Type", e.contentType)
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(e.data)))
 			w.Header().Set("Cache-Control", "public, max-age=86400")
 			w.Write(e.data)
 			return
 		}
-		// Expired, delete it
-		h.segmentCache.Delete(owncastURL)
+		h.segmentCache.Delete(srsURL)
 	}
 
 	// Cache miss - use singleflight to deduplicate concurrent fetches
-	// When 10,000 viewers request the same new segment simultaneously,
-	// only ONE request fetches from Owncast, others wait and share the result
-	result, err, _ := h.segmentFlight.Do(owncastURL, func() (interface{}, error) {
-		// Double-check cache (another goroutine might have populated it)
-		if entry, ok := h.segmentCache.Load(owncastURL); ok {
+	result, err, _ := h.segmentFlight.Do(srsURL, func() (interface{}, error) {
+		// Double-check cache
+		if entry, ok := h.segmentCache.Load(srsURL); ok {
 			e := entry.(*segmentCacheEntry)
 			if time.Now().Before(e.expiresAt) {
 				return e, nil
 			}
 		}
 
-		// Fetch from Owncast
-		resp, err := h.client.Get(owncastURL)
+		// Fetch from SRS
+		resp, err := h.client.Get(srsURL)
 		if err != nil {
 			return nil, err
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("owncast returned status %d", resp.StatusCode)
+			return nil, fmt.Errorf("SRS returned status %d", resp.StatusCode)
 		}
 
 		// Read the segment into memory
@@ -390,14 +520,14 @@ func (h *StreamHandler) serveSegment(w http.ResponseWriter, r *http.Request, own
 
 		// Cache if under 5MB
 		if len(data) < 5*1024*1024 {
-			h.segmentCache.Store(owncastURL, entry)
+			h.segmentCache.Store(srsURL, entry)
 		}
 
 		return entry, nil
 	})
 
 	if err != nil {
-		log.Error().Err(err).Str("url", owncastURL).Msg("Failed to fetch segment")
+		log.Error().Err(err).Str("url", srsURL).Msg("Failed to fetch segment")
 		http.Error(w, "Failed to fetch segment", http.StatusBadGateway)
 		return
 	}
@@ -418,7 +548,7 @@ func (h *StreamHandler) GetStreamInfo(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "Stream slug is required")
 		return
 	}
-	
+
 	ctx := r.Context()
 	stream, err := h.pgStore.GetStreamBySlug(ctx, slug)
 	if err != nil {
@@ -430,8 +560,7 @@ func (h *StreamHandler) GetStreamInfo(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "Stream not found")
 		return
 	}
-	
-	// Return public info (OwncastURL is omitted via json:"-" tag)
+
 	writeJSON(w, http.StatusOK, stream)
 }
 
@@ -445,8 +574,7 @@ func (h *StreamHandler) ListStreams(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "Failed to list streams")
 		return
 	}
-	
-	// OwncastURL is already hidden by json:"-" tag
+
 	writeJSON(w, http.StatusOK, streams)
 }
 
@@ -477,15 +605,13 @@ func (h *StreamHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	var req HeartbeatRequest
 	if r.Body != nil {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			// Device ID is optional for backwards compatibility
 			req.DeviceID = ""
 		}
 	}
 
 	ctx := r.Context()
 
-	// Validate token using Redis session (fast) instead of PostgreSQL
-	// Session is created when payment is confirmed, so if it exists, the token is valid
+	// Validate token using Redis session
 	session, err := h.redis.GetSession(ctx, token)
 	if err != nil || session == nil {
 		writeJSONError(w, http.StatusUnauthorized, "Invalid or expired token")
@@ -535,10 +661,10 @@ func (h *StreamHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	// Refresh session TTL
 	h.redis.RefreshSession(ctx, token, h.cfg.SessionDuration)
 
-	// Track active session for viewer count (TTL slightly longer than heartbeat interval)
+	// Track active session for viewer count
 	h.redis.TrackActiveSession(ctx, streamUUID, token, 45*time.Second)
 
-	// Generate playlist URL for the client (token validated via Redis, no signature needed)
+	// Generate playlist URL
 	playlistURL := fmt.Sprintf("%s/stream/%s/hls/stream.m3u8?token=%s", h.cfg.BaseURL, streamID, token)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -549,10 +675,9 @@ func (h *StreamHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetPlaylistURL returns a signed playlist URL for a stream
-// This is called after successful authentication to get the initial playlist URL
 func (h *StreamHandler) GetPlaylistURL(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
-	
+
 	// Get token from cookie
 	token := ""
 	if cookie, err := r.Cookie("access_token"); err == nil {
@@ -562,30 +687,30 @@ func (h *StreamHandler) GetPlaylistURL(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusUnauthorized, "Missing access token")
 		return
 	}
-	
+
 	ctx := r.Context()
-	
+
 	// Get stream
 	stream, err := h.pgStore.GetStreamBySlug(ctx, slug)
 	if err != nil || stream == nil {
 		writeJSONError(w, http.StatusNotFound, "Stream not found")
 		return
 	}
-	
+
 	// Validate token
 	payment, err := h.pgStore.GetPaymentByAccessToken(ctx, token)
 	if err != nil || payment == nil || !payment.IsTokenValid() {
 		writeJSONError(w, http.StatusUnauthorized, "Invalid or expired token")
 		return
 	}
-	
+
 	// Verify token is for this stream
 	if payment.StreamID != stream.ID {
 		writeJSONError(w, http.StatusForbidden, "Token not valid for this stream")
 		return
 	}
-	
-	// Generate playlist URL (token validated via Redis, no signature needed)
+
+	// Generate playlist URL
 	playlistURL := fmt.Sprintf("%s/stream/%s/hls/stream.m3u8?token=%s", h.cfg.BaseURL, stream.ID.String(), token)
 
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -594,7 +719,6 @@ func (h *StreamHandler) GetPlaylistURL(w http.ResponseWriter, r *http.Request) {
 }
 
 // BuildPlaylistURL builds a playlist URL with token
-// Used by page handlers to embed the URL in templates
 func (h *StreamHandler) BuildPlaylistURL(streamID uuid.UUID, token string) string {
 	return fmt.Sprintf("%s/stream/%s/hls/stream.m3u8?token=%s", h.cfg.BaseURL, streamID.String(), token)
 }
