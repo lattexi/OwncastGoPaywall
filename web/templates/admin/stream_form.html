@@ -33,24 +33,19 @@
             <!-- Streaming Info Panel (only for existing streams) -->
             <div class="streaming-info-card">
                 <h2>Streaming Configuration</h2>
-                
+
                 <div class="streaming-info-grid">
                     <div class="streaming-info-item">
-                        <label>Container Status</label>
+                        <label>Publishing Status</label>
                         <div class="container-status">
-                            <span class="status-badge status-{{.Stream.ContainerStatus}}">{{.Stream.ContainerStatus}}</span>
-                            {{if eq .Stream.ContainerStatus "stopped"}}
-                            <form method="POST" action="/admin/streams/{{.Stream.ID}}/container/start" style="display:inline;">
-                                <button type="submit" class="btn btn-primary btn-sm">Start Container</button>
-                            </form>
-                            {{else if eq .Stream.ContainerStatus "running"}}
-                            <form method="POST" action="/admin/streams/{{.Stream.ID}}/container/stop" style="display:inline;">
-                                <button type="submit" class="btn btn-secondary btn-sm">Stop Container</button>
-                            </form>
+                            {{if .Stream.IsPublishing}}
+                            <span class="status-badge status-running">Publishing</span>
+                            {{else}}
+                            <span class="status-badge status-stopped">Idle</span>
                             {{end}}
                         </div>
                     </div>
-                    
+
                     <div class="streaming-info-item">
                         <label>RTMP URL (for OBS)</label>
                         <div class="copy-field">
@@ -58,7 +53,7 @@
                             <button type="button" class="btn btn-secondary btn-sm" onclick="copyToClipboard('rtmp-url')">Copy</button>
                         </div>
                     </div>
-                    
+
                     <div class="streaming-info-item">
                         <label>Stream Key (for OBS)</label>
                         <div class="copy-field">
@@ -66,19 +61,12 @@
                             <button type="button" class="btn btn-secondary btn-sm" onclick="copyToClipboard('stream-key')">Copy</button>
                         </div>
                     </div>
-                    
-                    <div class="streaming-info-item">
-                        <label>Container Name</label>
-                        <code>{{.Stream.ContainerName}}</code>
-                    </div>
-
                 </div>
 
-                {{if eq .Stream.ContainerStatus "running"}}
                 <!-- Video Encoding Settings -->
                 <div class="video-settings-section" style="margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border);">
                     <h3>Video Quality Variants</h3>
-                    <p class="form-help" style="margin-bottom: 1rem;">Configure multiple quality variants for adaptive bitrate streaming (ABR). Viewers will automatically switch between qualities based on their connection.</p>
+                    <p class="form-help" style="margin-bottom: 1rem;">Configure transcoding variants for adaptive bitrate streaming. Changes take effect after SRS config reload.</p>
 
                     <div id="video-settings-loading">Loading settings...</div>
                     <div id="video-settings-form" style="display: none;">
@@ -89,7 +77,6 @@
                             <button type="button" class="btn btn-secondary btn-sm" onclick="addPreset('720p')">720p</button>
                             <button type="button" class="btn btn-secondary btn-sm" onclick="addPreset('480p')">480p</button>
                             <button type="button" class="btn btn-secondary btn-sm" onclick="addPreset('360p')">360p</button>
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="addPreset('passthrough')">Passthrough</button>
                         </div>
 
                         <!-- Variants Table -->
@@ -97,30 +84,16 @@
                             <thead>
                                 <tr>
                                     <th>Name</th>
-                                    <th>Bitrate (kbps)</th>
+                                    <th>Video Bitrate (kbps)</th>
+                                    <th>Audio Bitrate (kbps)</th>
                                     <th>FPS</th>
-                                    <th>Encoding Speed</th>
-                                    <th>Passthrough</th>
+                                    <th>Height</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody id="variants-body">
-                                <!-- Variants will be rendered here by JavaScript -->
                             </tbody>
                         </table>
-
-                        <div class="form-row" style="margin-top: 1rem;">
-                            <div class="form-group">
-                                <label for="latencyLevel">Stream Latency</label>
-                                <select id="latencyLevel">
-                                    <option value="1">Low latency (~4s delay)</option>
-                                    <option value="2">Default (~6s delay)</option>
-                                    <option value="3">High latency (~10s delay)</option>
-                                    <option value="4">Highest latency (most stable)</option>
-                                </select>
-                                <div class="form-help">Lower latency = more responsive but less stable</div>
-                            </div>
-                        </div>
 
                         <div style="margin-top: 1rem;">
                             <button type="button" id="saveVideoSettings" class="btn btn-primary">Save Video Settings</button>
@@ -129,12 +102,10 @@
                     </div>
                     <div id="video-settings-error" class="error-message" style="display: none;"></div>
                 </div>
-                {{end}}
-                
+
                 <div class="streaming-instructions">
                     <h3>OBS Setup Instructions</h3>
                     <ol>
-                        <li>Start the container using the button above</li>
                         <li>In OBS, go to Settings &rarr; Stream</li>
                         <li>Set Service to "Custom"</li>
                         <li>Paste the RTMP URL in the "Server" field</li>
@@ -152,7 +123,7 @@
                     {{.Error}}
                 </div>
                 {{end}}
-                
+
                 <form method="POST" action="{{if .IsEdit}}/admin/streams/{{.Stream.ID}}{{else}}/admin/streams{{end}}">
                     <div class="form-row">
                         <div class="form-group">
@@ -161,7 +132,7 @@
                                    value="{{if .Stream}}{{.Stream.Title}}{{end}}"
                                    placeholder="My Awesome Stream">
                         </div>
-                        
+
                         <div class="form-group">
                             <label for="slug">Slug *</label>
                             <input type="text" id="slug" name="slug" required
@@ -172,13 +143,13 @@
                             <div class="form-help">URL-friendly identifier (lowercase, hyphens only)</div>
                         </div>
                     </div>
-                    
+
                     <div class="form-group">
                         <label for="description">Description</label>
                         <textarea id="description" name="description" rows="3"
                                   placeholder="Optional description for the stream">{{if .Stream}}{{.Stream.Description}}{{end}}</textarea>
                     </div>
-                    
+
                     <div class="form-row">
                         <div class="form-group">
                             <label for="price">Price (EUR) *</label>
@@ -187,7 +158,7 @@
                                    value="{{if .Stream}}{{printf "%.2f" .Stream.PriceEuros}}{{else}}9.90{{end}}"
                                    placeholder="9.90">
                         </div>
-                        
+
                         <div class="form-group">
                             <label for="max_viewers">Max Viewers</label>
                             <input type="number" id="max_viewers" name="max_viewers"
@@ -197,21 +168,21 @@
                             <div class="form-help">0 means unlimited</div>
                         </div>
                     </div>
-                    
+
                     <div class="form-row">
                         <div class="form-group">
                             <label for="start_time">Start Time</label>
                             <input type="datetime-local" id="start_time" name="start_time"
                                    value="{{if .Stream}}{{if .Stream.StartTime}}{{.Stream.StartTime.Format "2006-01-02T15:04"}}{{end}}{{end}}">
                         </div>
-                        
+
                         <div class="form-group">
                             <label for="end_time">End Time</label>
                             <input type="datetime-local" id="end_time" name="end_time"
                                    value="{{if .Stream}}{{if .Stream.EndTime}}{{.Stream.EndTime.Format "2006-01-02T15:04"}}{{end}}{{end}}">
                         </div>
                     </div>
-                    
+
                     {{if .IsEdit}}
                     <div class="form-group">
                         <label for="status">Status</label>
@@ -222,7 +193,7 @@
                         </select>
                     </div>
                     {{end}}
-                    
+
                     <div class="form-actions">
                         <button type="submit" class="btn btn-primary">
                             {{if .IsEdit}}Save Changes{{else}}Create Stream{{end}}
@@ -239,16 +210,16 @@
                 <p class="form-help" style="margin-bottom: 1rem;">
                     Whitelisted emails can access this stream for free. They just need to enter their email on the "Already paid?" page.
                 </p>
-                
+
                 <!-- Add to whitelist form -->
                 <form id="whitelist-form" style="display: flex; gap: 1rem; margin-bottom: 1rem;">
                     <input type="email" id="whitelist-email" placeholder="email@example.com" required style="flex: 1;">
                     <input type="text" id="whitelist-notes" placeholder="Notes (optional)" style="flex: 1;">
                     <button type="submit" class="btn btn-primary">Add</button>
                 </form>
-                
+
                 <div id="whitelist-message" class="error-message" style="display: none;"></div>
-                
+
                 <!-- Whitelist table -->
                 <table class="admin-table" id="whitelist-table">
                     <thead>
@@ -298,7 +269,6 @@
         const btn = element.parentElement.querySelector('button');
         const originalText = btn.textContent;
 
-        // Try modern clipboard API first, fall back to execCommand
         if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(text).then(function() {
                 btn.textContent = 'Copied!';
@@ -425,9 +395,8 @@
     // Load whitelist on page load
     loadWhitelist();
     </script>
-    {{if eq .Stream.ContainerStatus "running"}}
     <script>
-    // Video settings management - Multiple Variants Support
+    // Video settings management
     const videoSettingsLoading = document.getElementById('video-settings-loading');
     const videoSettingsForm = document.getElementById('video-settings-form');
     const videoSettingsError = document.getElementById('video-settings-error');
@@ -436,59 +405,36 @@
 
     // Quality presets
     const QUALITY_PRESETS = {
-        '1080p': { name: '1080p', videoBitrate: 4500, framerate: 30, cpuUsageLevel: 3, videoPassthrough: false },
-        '720p':  { name: '720p',  videoBitrate: 2500, framerate: 30, cpuUsageLevel: 3, videoPassthrough: false },
-        '480p':  { name: '480p',  videoBitrate: 1200, framerate: 30, cpuUsageLevel: 2, videoPassthrough: false },
-        '360p':  { name: '360p',  videoBitrate: 800,  framerate: 30, cpuUsageLevel: 2, videoPassthrough: false },
-        'passthrough': { name: 'Source', videoBitrate: 0, framerate: 0, cpuUsageLevel: 1, videoPassthrough: true }
+        '1080p': { name: '1080p', videoBitrate: 4500, audioBitrate: 128, framerate: 30, scaleHeight: 1080 },
+        '720p':  { name: '720p',  videoBitrate: 2500, audioBitrate: 128, framerate: 30, scaleHeight: 720 },
+        '480p':  { name: '480p',  videoBitrate: 1200, audioBitrate: 96,  framerate: 30, scaleHeight: 480 },
+        '360p':  { name: '360p',  videoBitrate: 800,  audioBitrate: 64,  framerate: 30, scaleHeight: 360 }
     };
 
-    // Current variants array
     let variants = [];
 
-    // Encoding speed options
-    const encodingSpeedOptions = [
-        { value: 1, label: 'Fastest' },
-        { value: 2, label: 'Fast' },
-        { value: 3, label: 'Balanced' },
-        { value: 4, label: 'Slow' },
-        { value: 5, label: 'Slowest' }
-    ];
-
-    // Add a preset
     function addPreset(presetName) {
         const preset = QUALITY_PRESETS[presetName];
         if (!preset) return;
-
-        // Check for duplicate (by name)
         const exists = variants.some(v => v.name === preset.name);
         if (exists) {
             alert(`${preset.name} variant already exists.`);
             return;
         }
-
-        variants.push({ ...preset, audioPassthrough: true });
+        variants.push({ ...preset });
         renderVariantsTable();
     }
 
-    // Remove a variant
     function removeVariant(index) {
-        if (variants.length <= 1) {
-            alert('At least one variant is required.');
-            return;
-        }
         if (confirm('Remove this variant?')) {
             variants.splice(index, 1);
             renderVariantsTable();
         }
     }
 
-    // Update a variant field
     function updateVariant(index, field, value) {
         if (variants[index]) {
-            if (field === 'videoPassthrough') {
-                variants[index][field] = value;
-            } else if (field === 'name') {
+            if (field === 'name') {
                 variants[index][field] = value;
             } else {
                 variants[index][field] = parseInt(value) || 0;
@@ -496,7 +442,6 @@
         }
     }
 
-    // Render the variants table
     function renderVariantsTable() {
         if (variants.length === 0) {
             variantsBody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-secondary);">No variants configured. Add a preset above.</td></tr>';
@@ -512,23 +457,22 @@
                 <td>
                     <input type="number" class="variant-input" value="${v.videoBitrate || 0}"
                            onchange="updateVariant(${i}, 'videoBitrate', this.value)"
-                           min="0" max="20000" step="100" ${v.videoPassthrough ? 'disabled' : ''}>
+                           min="0" max="20000" step="100">
+                </td>
+                <td>
+                    <input type="number" class="variant-input" value="${v.audioBitrate || 0}"
+                           onchange="updateVariant(${i}, 'audioBitrate', this.value)"
+                           min="0" max="320" step="16">
                 </td>
                 <td>
                     <input type="number" class="variant-input" value="${v.framerate || 0}"
                            onchange="updateVariant(${i}, 'framerate', this.value)"
-                           min="0" max="120" step="1" ${v.videoPassthrough ? 'disabled' : ''}>
+                           min="0" max="120" step="1">
                 </td>
                 <td>
-                    <select class="variant-input" onchange="updateVariant(${i}, 'cpuUsageLevel', this.value)">
-                        ${encodingSpeedOptions.map(opt =>
-                            `<option value="${opt.value}" ${v.cpuUsageLevel === opt.value ? 'selected' : ''}>${opt.label}</option>`
-                        ).join('')}
-                    </select>
-                </td>
-                <td>
-                    <input type="checkbox" ${v.videoPassthrough ? 'checked' : ''}
-                           onchange="handlePassthroughChange(${i}, this.checked)">
+                    <input type="number" class="variant-input" value="${v.scaleHeight || 0}"
+                           onchange="updateVariant(${i}, 'scaleHeight', this.value)"
+                           min="0" max="2160" step="1">
                 </td>
                 <td>
                     <button type="button" class="btn btn-danger btn-sm" onclick="removeVariant(${i})">Remove</button>
@@ -537,88 +481,40 @@
         `).join('');
     }
 
-    // Handle passthrough toggle (disables bitrate/fps when checked)
-    function handlePassthroughChange(index, checked) {
-        variants[index].videoPassthrough = checked;
-        if (checked) {
-            variants[index].videoBitrate = 0;
-            variants[index].framerate = 0;
-        }
-        renderVariantsTable();
-    }
-
-    // Load video settings from API
-    async function loadVideoSettings(retryCount = 0) {
-        const maxRetries = 5;
-        const retryDelay = 2000;
-
+    async function loadVideoSettings() {
         try {
-            const response = await fetch(`/admin/api/streams/${streamId}/owncast/settings`);
-            if (!response.ok) {
-                throw new Error('Failed to load settings');
-            }
+            const response = await fetch(`/admin/api/streams/${streamId}/srs/settings`);
+            if (!response.ok) throw new Error('Failed to load settings');
             const data = await response.json();
 
-            // Load all variants
-            if (data.videoSettings && data.videoSettings.videoQualityVariants && data.videoSettings.videoQualityVariants.length > 0) {
-                variants = data.videoSettings.videoQualityVariants.map(v => ({
-                    name: v.name || '',
-                    videoBitrate: v.videoBitrate || 0,
-                    framerate: v.framerate || 0,
-                    cpuUsageLevel: v.cpuUsageLevel || 2,
-                    videoPassthrough: v.videoPassthrough || false,
-                    audioPassthrough: v.audioPassthrough !== false
-                }));
+            if (data.variants && data.variants.length > 0) {
+                variants = data.variants;
             } else {
-                // Default to a single 720p variant if none configured
-                variants = [{ ...QUALITY_PRESETS['720p'], audioPassthrough: true }];
+                variants = [];
             }
 
             renderVariantsTable();
-
-            if (data.videoSettings && data.videoSettings.latencyLevel) {
-                document.getElementById('latencyLevel').value = data.videoSettings.latencyLevel;
-            }
-
             videoSettingsLoading.style.display = 'none';
             videoSettingsForm.style.display = 'block';
         } catch (error) {
             console.error('Failed to load video settings:', error);
-            if (retryCount < maxRetries) {
-                videoSettingsLoading.textContent = `Loading settings... (attempt ${retryCount + 2}/${maxRetries + 1})`;
-                setTimeout(() => loadVideoSettings(retryCount + 1), retryDelay);
-            } else {
-                videoSettingsLoading.style.display = 'none';
-                videoSettingsError.textContent = 'Failed to load video settings. The container may still be starting. Try refreshing the page.';
-                videoSettingsError.style.display = 'block';
-            }
+            videoSettingsLoading.style.display = 'none';
+            videoSettingsError.textContent = 'Failed to load video settings.';
+            videoSettingsError.style.display = 'block';
         }
     }
 
-    // Save video settings
     document.getElementById('saveVideoSettings').addEventListener('click', async function() {
         const btn = this;
         btn.disabled = true;
         videoSettingsStatus.textContent = 'Saving...';
         videoSettingsStatus.style.color = '';
 
-        if (variants.length === 0) {
-            videoSettingsStatus.textContent = 'At least one variant is required.';
-            videoSettingsStatus.style.color = 'var(--danger)';
-            btn.disabled = false;
-            return;
-        }
-
-        const latencyLevel = parseInt(document.getElementById('latencyLevel').value);
-
         try {
-            const response = await fetch(`/admin/api/streams/${streamId}/owncast/settings`, {
+            const response = await fetch(`/admin/api/streams/${streamId}/srs/settings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    variants: variants,
-                    latencyLevel: latencyLevel
-                })
+                body: JSON.stringify({ variants: variants })
             });
 
             if (!response.ok) {
@@ -637,10 +533,8 @@
         }
     });
 
-    // Load video settings on page load
     loadVideoSettings();
     </script>
-    {{end}}
     {{end}}
 </body>
 </html>

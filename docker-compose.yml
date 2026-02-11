@@ -1,4 +1,18 @@
 services:
+  # SRS - Lightweight streaming server (shared by all streams)
+  paywall-srs:
+    build: ./docker/srs
+    container_name: paywall-srs
+    restart: unless-stopped
+    ports:
+      - "19350:19350"   # RTMP ingest (public, for OBS)
+    volumes:
+      - srs-config:/srs-config
+    command: ./objs/srs -c /srs-config/srs.conf
+    networks:
+      - internal
+    # HLS port 8080 NOT exposed to host, only accessible via internal network
+
   # Stream Paywall Server - Public facing
   paywall:
     build: .
@@ -6,7 +20,6 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
-      # Note: RTMP ports (19350-19399) are exposed directly by dynamic Owncast containers
     environment:
       - ENV=production
       - BASE_URL=${BASE_URL:-http://localhost:3000}
@@ -22,17 +35,21 @@ services:
       - SESSION_DURATION=${SESSION_DURATION:-24h}
       - HEARTBEAT_TIMEOUT=${HEARTBEAT_TIMEOUT:-45s}
       - SIGNATURE_VALIDITY=${SIGNATURE_VALIDITY:-24h}
-      # Docker management configuration
-      - OWNCAST_CPU_LIMIT=${OWNCAST_CPU_LIMIT:-4}
-      - OWNCAST_MEMORY_LIMIT=${OWNCAST_MEMORY_LIMIT:-4096}
-      - DOCKER_HOST=unix:///var/run/docker.sock
-      - DOCKER_NETWORK=owncastgopaywall_internal
-      - OWNCAST_IMAGE=${OWNCAST_IMAGE:-owncast/owncast:latest}
+      # SRS configuration
+      - SRS_INTERNAL_URL=http://paywall-srs:8080
+      - SRS_API_URL=http://paywall-srs:1985
+      - SRS_CONFIG_PATH=/srs-config/srs.conf
+      - SRS_WEBHOOK_BASE=http://stream-paywall:3000
       - RTMP_PORT_START=${RTMP_PORT_START:-19350}
       - RTMP_PUBLIC_HOST=${RTMP_PUBLIC_HOST:-localhost}
+      # Docker (for metrics only)
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - DOCKER_NETWORK=owncastgopaywall_internal
     volumes:
-      # Mount Docker socket for container management
+      # Mount Docker socket for container metrics
       - /var/run/docker.sock:/var/run/docker.sock
+      # Shared SRS config volume (Go writes srs.conf here)
+      - srs-config:/srs-config
     depends_on:
       postgres:
         condition: service_healthy
@@ -55,9 +72,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-
-  # Note: Owncast containers are now created dynamically by the paywall server
-  # Each stream gets its own isolated Owncast instance with a unique RTMP port
 
   # PostgreSQL - Internal only
   postgres:
@@ -100,14 +114,11 @@ networks:
   public:
     driver: bridge
 
-  # Internal network - for internal services and dynamic Owncast containers
-  # Note: Dynamic Owncast containers join this network for HLS proxying
-  # but expose RTMP ports directly on the host for OBS connections
+  # Internal network - for inter-service communication
   internal:
     driver: bridge
-    # Removed internal: true so dynamic containers can be managed properly
-    # Security is maintained by not exposing HLS ports - only RTMP for streaming input
 
 volumes:
   postgres-data:
   redis-data:
+  srs-config:

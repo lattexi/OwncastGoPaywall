@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"io"
 	"net/http"
 	"regexp"
@@ -178,8 +179,32 @@ func (h *StreamHandler) ServeHLS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build internal Owncast URL
-	owncastURL := strings.TrimSuffix(stream.OwncastURL, "/") + "/hls/" + hlsPath
+	// Entry point: generate multi-variant master playlist if stream has transcode variants
+	if hlsPath == "stream.m3u8" {
+		if master := h.generateMasterPlaylist(stream, streamID, token); master != "" {
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Write([]byte(master))
+			return
+		}
+		// No transcode variants — fall through to proxy SRS master playlist
+	}
+
+	// Build internal SRS URL
+	var srsHLSPath string
+	if hlsPath == "stream.m3u8" {
+		srsHLSPath = "live/" + stream.StreamKey + ".m3u8"
+	} else if strings.HasPrefix(hlsPath, "live/") {
+		srsHLSPath = hlsPath
+	} else {
+		srsHLSPath = "live/" + hlsPath
+	}
+	srsURL := strings.TrimSuffix(h.cfg.SRSInternalURL, "/") + "/" + srsHLSPath
+	// Forward SRS-specific query params (like hls_ctx) to SRS
+	if hlsCtx := r.URL.Query().Get("hls_ctx"); hlsCtx != "" {
+		srsURL += "?hls_ctx=" + hlsCtx
+	}
+	owncastURL := srsURL
 
 	if isPlaylist {
 		h.servePlaylist(w, r, stream, owncastURL, token, hlsPath)
@@ -300,21 +325,28 @@ func (h *StreamHandler) rewritePlaylist(body io.Reader, streamID, token, baseDir
 
 		// Check if this line is a URL (segment or nested playlist)
 		if hlsURLRegex.MatchString(line) {
-			// Extract the filename/path
+			// Extract the filename/path and any query params (e.g., hls_ctx from SRS)
 			originalPath := line
-			
-			// Remove any existing query params
+			extraParams := ""
+
+			// Preserve SRS query params (like hls_ctx) while adding our token
 			if idx := strings.Index(originalPath, "?"); idx != -1 {
+				extraParams = "&" + originalPath[idx+1:]
 				originalPath = originalPath[:idx]
 			}
-			
+
+			// Strip leading slash (SRS returns absolute paths like /live/...)
+			originalPath = strings.TrimPrefix(originalPath, "/")
+
 			// Handle relative paths - prepend the base directory
-			if !strings.HasPrefix(originalPath, "/") && !strings.HasPrefix(originalPath, "http") {
+			// Only prepend if the path doesn't already include a directory component
+			// (SRS absolute paths like /live/... already have the directory after stripping /)
+			if !strings.Contains(originalPath, "/") && baseDir != "" {
 				originalPath = baseDir + originalPath
 			}
-			
+
 			// Build the proxy URL with token (no signature needed - validated via Redis)
-			proxyPath := "/stream/" + streamID + "/hls/" + originalPath + "?token=" + token
+			proxyPath := "/stream/" + streamID + "/hls/" + originalPath + "?token=" + token + extraParams
 
 			result.WriteString(proxyPath)
 		} else {
@@ -408,6 +440,42 @@ func (h *StreamHandler) serveSegment(w http.ResponseWriter, r *http.Request, own
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(entry.data)))
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.Write(entry.data)
+}
+
+// generateMasterPlaylist builds a multi-variant HLS master playlist if the stream
+// has transcode variants configured. Returns empty string if no variants exist.
+func (h *StreamHandler) generateMasterPlaylist(stream *models.Stream, streamID, token string) string {
+	if len(stream.TranscodeConfig) == 0 {
+		return ""
+	}
+
+	var variants []models.TranscodeVariant
+	if err := json.Unmarshal(stream.TranscodeConfig, &variants); err != nil || len(variants) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("#EXTM3U\n")
+
+	// Source (original) stream — always first, use a high bandwidth estimate
+	b.WriteString(fmt.Sprintf("#EXT-X-STREAM-INF:BANDWIDTH=5000000,NAME=\"Source\"\n"))
+	b.WriteString(fmt.Sprintf("/stream/%s/hls/live/%s.m3u8?token=%s\n", streamID, stream.StreamKey, token))
+
+	// Transcoded variants
+	for _, v := range variants {
+		bandwidth := (v.VideoBitrate + v.AudioBitrate) * 1000 // kbps -> bps
+		width := int(math.Round(float64(v.ScaleHeight) * 16.0 / 9.0))
+		// Ensure width is even (required by most encoders)
+		if width%2 != 0 {
+			width++
+		}
+		b.WriteString(fmt.Sprintf("#EXT-X-STREAM-INF:BANDWIDTH=%d,RESOLUTION=%dx%d,NAME=\"%s\"\n",
+			bandwidth, width, v.ScaleHeight, v.Name))
+		b.WriteString(fmt.Sprintf("/stream/%s/hls/live/%s_%s.m3u8?token=%s\n",
+			streamID, stream.StreamKey, v.Name, token))
+	}
+
+	return b.String()
 }
 
 // GetStreamInfo returns public stream information

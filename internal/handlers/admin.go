@@ -72,7 +72,7 @@ func (h *AdminHandler) CreateStream(w http.ResponseWriter, r *http.Request) {
 		Status:          models.StreamStatusScheduled,
 		MaxViewers:      req.MaxViewers,
 		CreatedAt:       time.Now(),
-		ContainerStatus: models.ContainerStatusStopped,
+		ContainerStatus: "stopped",
 	}
 
 	if err := h.pgStore.CreateStream(ctx, stream); err != nil {
@@ -113,21 +113,19 @@ func (h *AdminHandler) GetStream(w http.ResponseWriter, r *http.Request) {
 
 	// Include internal fields for admin (override json:"-")
 	response := map[string]interface{}{
-		"id":               stream.ID,
-		"slug":             stream.Slug,
-		"title":            stream.Title,
-		"description":      stream.Description,
-		"price_cents":      stream.PriceCents,
-		"start_time":       stream.StartTime,
-		"end_time":         stream.EndTime,
-		"status":           stream.Status,
-		"owncast_url":      stream.OwncastURL,
-		"max_viewers":      stream.MaxViewers,
-		"created_at":       stream.CreatedAt,
-		"stream_key":       stream.StreamKey,
-		"rtmp_port":        stream.RTMPPort,
-		"container_name":   stream.ContainerName,
-		"container_status": stream.ContainerStatus,
+		"id":            stream.ID,
+		"slug":          stream.Slug,
+		"title":         stream.Title,
+		"description":   stream.Description,
+		"price_cents":   stream.PriceCents,
+		"start_time":    stream.StartTime,
+		"end_time":      stream.EndTime,
+		"status":        stream.Status,
+		"max_viewers":   stream.MaxViewers,
+		"created_at":    stream.CreatedAt,
+		"stream_key":    stream.StreamKey,
+		"rtmp_port":     stream.RTMPPort,
+		"is_publishing": stream.IsPublishing,
 	}
 
 	writeJSON(w, http.StatusOK, response)

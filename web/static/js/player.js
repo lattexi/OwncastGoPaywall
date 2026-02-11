@@ -66,8 +66,11 @@
             this.hls = new Hls({
                 debug: false,
                 enableWorker: true,
-                lowLatencyMode: true,
-                backBufferLength: 90
+                lowLatencyMode: false,
+                backBufferLength: 90,
+                abrEwmaDefaultEstimate: 3000000, // Start at 3Mbps (picks ~720p)
+                abrEwmaFastLive: 2,              // Fast upward/downward adaptation
+                abrEwmaSlowLive: 5
             });
 
             // Attach to video element

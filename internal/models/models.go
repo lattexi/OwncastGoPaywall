@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,16 +16,14 @@ const (
 	StreamStatusEnded     StreamStatus = "ended"
 )
 
-// ContainerStatus represents the status of an Owncast container
-type ContainerStatus string
-
-const (
-	ContainerStatusStopped  ContainerStatus = "stopped"
-	ContainerStatusStarting ContainerStatus = "starting"
-	ContainerStatusRunning  ContainerStatus = "running"
-	ContainerStatusStopping ContainerStatus = "stopping"
-	ContainerStatusError    ContainerStatus = "error"
-)
+// TranscodeVariant represents a video transcoding quality variant
+type TranscodeVariant struct {
+	Name         string `json:"name"`
+	VideoBitrate int    `json:"videoBitrate"`
+	AudioBitrate int    `json:"audioBitrate"`
+	Framerate    int    `json:"framerate"`
+	ScaleHeight  int    `json:"scaleHeight,omitempty"`
+}
 
 // Stream represents a paywall-protected video stream
 type Stream struct {
@@ -40,11 +39,13 @@ type Stream struct {
 	MaxViewers  int          `json:"max_viewers,omitempty"` // 0 = unlimited
 	CreatedAt   time.Time    `json:"created_at"`
 
-	// Dynamic Owncast container fields
-	StreamKey       string          `json:"-"`                  // OBS stream key (never expose)
-	RTMPPort        int             `json:"rtmp_port"`          // Assigned RTMP port
-	ContainerName   string          `json:"-"`                  // Docker container name
-	ContainerStatus ContainerStatus `json:"container_status"`   // Container state
+	// Streaming fields
+	StreamKey       string          `json:"-"`                        // OBS stream key (never expose)
+	RTMPPort        int             `json:"rtmp_port"`                // Fixed RTMP port (19350)
+	ContainerName   string          `json:"-"`                        // Legacy, kept for compat
+	ContainerStatus string          `json:"container_status"`         // Legacy, defaults to "stopped"
+	IsPublishing    bool            `json:"is_publishing"`            // Set by SRS webhooks
+	TranscodeConfig json.RawMessage `json:"transcode_config,omitempty"` // JSONB array of TranscodeVariant
 }
 
 // PriceEuros returns the price formatted in euros
@@ -119,14 +120,13 @@ type CreateStreamRequest struct {
 
 // UpdateStreamRequest is the request body for updating a stream
 type UpdateStreamRequest struct {
-	Title           *string          `json:"title,omitempty"`
-	Description     *string          `json:"description,omitempty"`
-	PriceCents      *int             `json:"price_cents,omitempty"`
-	StartTime       *time.Time       `json:"start_time,omitempty"`
-	EndTime         *time.Time       `json:"end_time,omitempty"`
-	Status          *StreamStatus    `json:"status,omitempty"`
-	MaxViewers      *int             `json:"max_viewers,omitempty"`
-	ContainerStatus *ContainerStatus `json:"container_status,omitempty"`
+	Title       *string       `json:"title,omitempty"`
+	Description *string       `json:"description,omitempty"`
+	PriceCents  *int          `json:"price_cents,omitempty"`
+	StartTime   *time.Time    `json:"start_time,omitempty"`
+	EndTime     *time.Time    `json:"end_time,omitempty"`
+	Status      *StreamStatus `json:"status,omitempty"`
+	MaxViewers  *int          `json:"max_viewers,omitempty"`
 }
 
 // CreatePaymentRequest is the request body for initiating a payment

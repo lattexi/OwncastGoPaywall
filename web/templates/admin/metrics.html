@@ -40,10 +40,10 @@
 
             <!-- Metrics Grid -->
             <div class="metrics-grid">
-                <!-- Owncast Containers -->
+                <!-- SRS Container -->
                 <div class="metrics-card">
-                    <h3>Owncast Containers</h3>
-                    <div id="owncast-containers" class="container-list">
+                    <h3>SRS Container (paywall-srs)</h3>
+                    <div id="srs-container" class="metrics-card-content">
                         <div style="text-align: center; color: var(--text-secondary);">Loading...</div>
                     </div>
                 </div>
@@ -146,22 +146,11 @@
 
     // Update UI with metrics data
     function updateUI(metrics) {
-        // Update alerts
         updateAlerts(metrics.alerts);
-
-        // Update Owncast containers
-        updateOwncastContainers(metrics.owncastContainers || []);
-
-        // Update Redis metrics
+        updateSRSContainer(metrics.srsContainer);
         updateRedisMetrics(metrics.redis);
-
-        // Update Postgres metrics
         updatePostgresMetrics(metrics.postgres);
-
-        // Update Go runtime metrics
         updateGoRuntimeMetrics(metrics.goRuntime);
-
-        // Update server container
         updateServerContainer(metrics.serverContainer);
     }
 
@@ -178,7 +167,7 @@
         section.style.display = 'block';
         container.innerHTML = alerts.map(alert => `
             <div class="alert-item ${alert.level}">
-                <span class="alert-icon">${alert.level === 'critical' ? '&#9888;' : '&#9888;'}</span>
+                <span class="alert-icon">&#9888;</span>
                 <div class="alert-content">
                     <div class="alert-component">${escapeHtml(alert.component)}</div>
                     <div class="alert-message">${escapeHtml(alert.message)}</div>
@@ -187,28 +176,33 @@
         `).join('');
     }
 
-    // Update Owncast containers list
-    function updateOwncastContainers(containers) {
-        const el = document.getElementById('owncast-containers');
+    // Update SRS container
+    function updateSRSContainer(srs) {
+        const el = document.getElementById('srs-container');
 
-        if (containers.length === 0) {
-            el.innerHTML = '<div style="text-align: center; color: var(--text-secondary);">No Owncast containers running</div>';
+        if (!srs) {
+            el.innerHTML = '<div style="text-align: center; color: var(--text-secondary);">SRS container not detected</div>';
             return;
         }
 
-        el.innerHTML = containers.map(c => `
-            <div class="container-item">
-                <span class="container-status-dot ${c.status}"></span>
-                <div class="container-info">
-                    <div class="container-name">${escapeHtml(c.name)}</div>
-                    <div class="container-stats">
-                        CPU: ${c.cpuPercent.toFixed(1)}% |
-                        Mem: ${c.memoryUsageMB.toFixed(0)} MB (${c.memoryPercent.toFixed(1)}%) |
-                        Net: ${c.networkRxMbps.toFixed(1)}/${c.networkTxMbps.toFixed(1)} Mb/s
-                    </div>
-                </div>
+        el.innerHTML = `
+            <div class="metric-row">
+                <span class="metric-label">CPU</span>
+                <span class="metric-value">${srs.cpuPercent.toFixed(1)}%</span>
             </div>
-        `).join('');
+            <div class="metric-row">
+                <span class="metric-label">Memory</span>
+                <span class="metric-value">${srs.memoryUsageMB.toFixed(0)} MB (${srs.memoryPercent.toFixed(1)}%)</span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">Network Rate</span>
+                <span class="metric-value">${srs.networkRxMbps.toFixed(1)} Mb/s rx / ${srs.networkTxMbps.toFixed(1)} Mb/s tx</span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">Network Total</span>
+                <span class="metric-value">${srs.networkRxMB.toFixed(1)} MB rx / ${srs.networkTxMB.toFixed(1)} MB tx</span>
+            </div>
+        `;
     }
 
     // Update Redis metrics

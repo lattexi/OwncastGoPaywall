@@ -39,15 +39,17 @@ type Config struct {
 	RecoveryRateLimitPerEmail int
 	RecoveryRateLimitPerIP    int
 
-	// Docker / Owncast Container Management
-	DockerHost           string // Docker socket path (e.g., unix:///var/run/docker.sock)
-	DockerNetwork        string // Docker network for containers (e.g., "internal")
-	OwncastImage         string // Owncast Docker image
-	RTMPPortStart        int    // Starting port for RTMP (e.g., 19350)
-	RTMPPublicHost       string // Public hostname for RTMP URLs (shown in admin)
-	OwncastAdminPassword string // Owncast admin password (default: "abc123")
-	OwncastCPULimit      int64  // CPU limit in cores (e.g., 4 = 4 cores)
-	OwncastMemoryLimit   int64  // Memory limit in MB (e.g., 4096 = 4GB)
+	// Docker (for metrics only)
+	DockerHost    string // Docker socket path (e.g., unix:///var/run/docker.sock)
+	DockerNetwork string // Docker network for containers (e.g., "internal")
+
+	// SRS Configuration
+	SRSInternalURL  string // Internal URL for HLS fetching (default: http://paywall-srs:8080)
+	SRSAPIUrl       string // SRS API URL for config reload (default: http://paywall-srs:1985)
+	SRSConfigPath   string // Path to write srs.conf (default: /srs-config/srs.conf)
+	SRSWebhookBase  string // Internal base URL for SRS webhook callbacks (default: http://stream-paywall:3000)
+	RTMPPortStart   int    // Fixed RTMP port (19350)
+	RTMPPublicHost  string // Public hostname for RTMP URLs (shown in admin)
 }
 
 // Load reads configuration from environment variables
@@ -79,15 +81,17 @@ func Load() (*Config, error) {
 		RecoveryRateLimitPerEmail: 5,
 		RecoveryRateLimitPerIP:    20,
 
-		// Docker defaults
-		DockerHost:           getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
-		DockerNetwork:        getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
-		OwncastImage:         getEnv("OWNCAST_IMAGE", "owncast/owncast:latest"),
-		RTMPPortStart:        getEnvInt("RTMP_PORT_START", 19350),
-		RTMPPublicHost:       getEnv("RTMP_PUBLIC_HOST", "localhost"),
-		OwncastAdminPassword: getEnv("OWNCAST_ADMIN_PASSWORD", "abc123"),
-		OwncastCPULimit:      int64(getEnvInt("OWNCAST_CPU_LIMIT", 4)),      // 4 cores default
-		OwncastMemoryLimit:   int64(getEnvInt("OWNCAST_MEMORY_LIMIT", 4096)), // 4GB default
+		// Docker defaults (for metrics only)
+		DockerHost:    getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
+		DockerNetwork: getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
+
+		// SRS defaults
+		SRSInternalURL: getEnv("SRS_INTERNAL_URL", "http://paywall-srs:8080"),
+		SRSAPIUrl:      getEnv("SRS_API_URL", "http://paywall-srs:1985"),
+		SRSConfigPath:  getEnv("SRS_CONFIG_PATH", "/srs-config/srs.conf"),
+		SRSWebhookBase: getEnv("SRS_WEBHOOK_BASE", "http://stream-paywall:3000"),
+		RTMPPortStart:  getEnvInt("RTMP_PORT_START", 19350),
+		RTMPPublicHost: getEnv("RTMP_PUBLIC_HOST", "localhost"),
 	}
 
 	// Parse durations
@@ -151,14 +155,14 @@ func LoadWithDefaults() *Config {
 			AdminInitialPassword:      getEnv("ADMIN_INITIAL_PASSWORD", "admin"),
 			RecoveryRateLimitPerEmail: 5,
 			RecoveryRateLimitPerIP:    20,
-			DockerHost:           getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
-			DockerNetwork:        getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
-			OwncastImage:         getEnv("OWNCAST_IMAGE", "owncast/owncast:latest"),
-			RTMPPortStart:        getEnvInt("RTMP_PORT_START", 19350),
-			RTMPPublicHost:       getEnv("RTMP_PUBLIC_HOST", "localhost"),
-			OwncastAdminPassword: getEnv("OWNCAST_ADMIN_PASSWORD", "abc123"),
-			OwncastCPULimit:      4,
-			OwncastMemoryLimit:   4096,
+			DockerHost:     getEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
+			DockerNetwork:  getEnv("DOCKER_NETWORK", "owncastgopaywall_internal"),
+			SRSInternalURL: getEnv("SRS_INTERNAL_URL", "http://paywall-srs:8080"),
+			SRSAPIUrl:      getEnv("SRS_API_URL", "http://paywall-srs:1985"),
+			SRSConfigPath:  getEnv("SRS_CONFIG_PATH", "/srs-config/srs.conf"),
+			SRSWebhookBase: getEnv("SRS_WEBHOOK_BASE", "http://stream-paywall:3000"),
+			RTMPPortStart:  getEnvInt("RTMP_PORT_START", 19350),
+			RTMPPublicHost: getEnv("RTMP_PUBLIC_HOST", "localhost"),
 		}
 	}
 	return cfg

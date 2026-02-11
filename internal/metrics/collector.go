@@ -37,8 +37,7 @@ type ContainerMetrics struct {
 	NetworkTxMB   float64      `json:"networkTxMB"`   // Cumulative
 	NetworkRxMbps float64      `json:"networkRxMbps"` // Rate in megabits per second
 	NetworkTxMbps float64      `json:"networkTxMbps"` // Rate in megabits per second
-	IsOwncast     bool         `json:"isOwncast"`
-	StreamSlug    string       `json:"streamSlug,omitempty"`
+	IsSRS         bool         `json:"isSRS"`
 }
 
 // RedisMetrics represents Redis server metrics
@@ -77,14 +76,14 @@ type Alert struct {
 
 // SystemMetrics represents all collected system metrics
 type SystemMetrics struct {
-	Timestamp         time.Time          `json:"timestamp"`
-	OverallStatus     HealthStatus       `json:"overallStatus"`
-	OwncastContainers []ContainerMetrics `json:"owncastContainers"`
-	ServerContainer   *ContainerMetrics  `json:"serverContainer,omitempty"`
-	Redis             RedisMetrics       `json:"redis"`
-	Postgres          PostgresMetrics    `json:"postgres"`
-	GoRuntime         GoRuntimeMetrics   `json:"goRuntime"`
-	Alerts            []Alert            `json:"alerts"`
+	Timestamp      time.Time          `json:"timestamp"`
+	OverallStatus  HealthStatus       `json:"overallStatus"`
+	SRSContainer   *ContainerMetrics  `json:"srsContainer,omitempty"`
+	ServerContainer *ContainerMetrics `json:"serverContainer,omitempty"`
+	Redis          RedisMetrics       `json:"redis"`
+	Postgres       PostgresMetrics    `json:"postgres"`
+	GoRuntime      GoRuntimeMetrics   `json:"goRuntime"`
+	Alerts         []Alert            `json:"alerts"`
 }
 
 // cpuStatsCache stores previous CPU stats for delta calculation
@@ -132,8 +131,8 @@ func (c *Collector) Collect(ctx context.Context) (*SystemMetrics, error) {
 
 	// Collect container metrics
 	if c.dockerClient != nil {
-		owncast, server, containerAlerts := c.collectContainerMetrics(ctx)
-		metrics.OwncastContainers = owncast
+		srsContainer, server, containerAlerts := c.collectContainerMetrics(ctx)
+		metrics.SRSContainer = srsContainer
 		metrics.ServerContainer = server
 		metrics.Alerts = append(metrics.Alerts, containerAlerts...)
 	}
@@ -169,16 +168,19 @@ func (c *Collector) Collect(ctx context.Context) (*SystemMetrics, error) {
 	return metrics, nil
 }
 
-// collectContainerMetrics collects metrics from all Docker containers
-func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMetrics, *ContainerMetrics, []Alert) {
-	var owncastContainers []ContainerMetrics
+// srsContainerName is the name of the SRS container managed by docker-compose
+const srsContainerName = "paywall-srs"
+
+// collectContainerMetrics collects metrics from SRS and server containers
+func (c *Collector) collectContainerMetrics(ctx context.Context) (*ContainerMetrics, *ContainerMetrics, []Alert) {
+	var srsContainer *ContainerMetrics
 	var serverContainer *ContainerMetrics
 	var alerts []Alert
 
 	containers, err := c.dockerClient.ContainerList(ctx, container.ListOptions{All: false})
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to list containers")
-		return owncastContainers, serverContainer, alerts
+		return srsContainer, serverContainer, alerts
 	}
 
 	for _, ctr := range containers {
@@ -188,12 +190,12 @@ func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMet
 			name = strings.TrimPrefix(ctr.Names[0], "/")
 		}
 
-		// Check if it's an Owncast container or the stream-paywall server
-		isOwncast := strings.HasPrefix(name, "owncast-")
+		// Check if it's the SRS container or the stream-paywall server
+		isSRS := name == srsContainerName
 		isServer := name == "stream-paywall"
 
-		// Skip containers that are neither Owncast nor the server
-		if !isOwncast && !isServer {
+		// Skip containers that are neither SRS nor the server
+		if !isSRS && !isServer {
 			continue
 		}
 
@@ -232,14 +234,9 @@ func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMet
 		// Calculate network rate (Mb/s) using cached previous values
 		networkRxMbps, networkTxMbps := c.calculateNetworkRateWithCache(ctr.ID, networkRx, networkTx)
 
-		streamSlug := ""
-		if isOwncast {
-			streamSlug = strings.TrimPrefix(name, "owncast-")
-		}
-
 		// Determine health status
 		status := HealthStatusHealthy
-		if isOwncast {
+		if isSRS {
 			if cpuPercent > 90 {
 				status = HealthStatusCritical
 				alerts = append(alerts, Alert{
@@ -269,18 +266,17 @@ func (c *Collector) collectContainerMetrics(ctx context.Context) ([]ContainerMet
 			NetworkTxMB:   float64(networkTx) / (1024 * 1024),
 			NetworkRxMbps: networkRxMbps,
 			NetworkTxMbps: networkTxMbps,
-			IsOwncast:     isOwncast,
-			StreamSlug:    streamSlug,
+			IsSRS:         isSRS,
 		}
 
-		if isOwncast {
-			owncastContainers = append(owncastContainers, containerMetric)
+		if isSRS {
+			srsContainer = &containerMetric
 		} else if isServer {
 			serverContainer = &containerMetric
 		}
 	}
 
-	return owncastContainers, serverContainer, alerts
+	return srsContainer, serverContainer, alerts
 }
 
 // calculateCPUPercentWithCache calculates CPU percentage using cached previous stats
